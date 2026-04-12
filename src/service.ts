@@ -132,7 +132,7 @@ class MoneiPaymentProviderService extends AbstractPaymentProvider<MoneiPaymentPr
     path: string,
     method: "GET" | "POST" = "POST",
     body?: Record<string, any>
-  ): Promise<Record<string, any>> {
+  ): Promise<any> {
     const url = `https://api.monei.com/v1${path}`
     const headers: Record<string, string> = {
       Authorization: this.options_.apiKey,
@@ -226,7 +226,7 @@ class MoneiPaymentProviderService extends AbstractPaymentProvider<MoneiPaymentPr
         payload.callbackUrl = (context as any).webhook_url
       }
 
-      const payment = await this.monei_.payments.create(payload)
+      const payment = await this.monei_.payments.create(payload as any)
 
       this.logger_.info(
         `MONEI: Created payment ${payment.id} (session: ${sessionId}, ` +
@@ -473,18 +473,22 @@ class MoneiPaymentProviderService extends AbstractPaymentProvider<MoneiPaymentPr
         refundPayload.amount = this.toMoneiAmount(input.amount as number)
       }
 
-      const refund = await this.monei_.refunds.create(refundPayload)
+      const payment = await this.moneiRest(
+        `/payments/${paymentId}/refund`,
+        "POST",
+        Object.keys(refundPayload).length > 1 ? refundPayload : undefined
+      )
 
       this.logger_.info(
         `MONEI: Refunded ${paymentId} (amount: ${refundPayload.amount || "full"}, ` +
-          `refund: ${refund.id})`
+          `status: ${payment.status})`
       )
 
       return {
         data: {
           ...input.data,
           id: paymentId,
-          refund_id: refund.id,
+          status: payment.status,
           refunded_at: new Date().toISOString(),
         },
       }
