@@ -1,0 +1,54 @@
+{
+  "name": "medusa-payment-monei",
+  "version": "0.1.0",
+  "description": "MONEI payment provider for Medusa v2. Accept Cards, Bizum, PayPal, Google Pay, Apple Pay and more through MONEI — a licensed European Payment Institution.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "medusa",
+    "medusa-payment",
+    "medusa-plugin",
+    "medusa-payment-provider",
+    "monei",
+    "payment",
+    "bizum",
+    "cards",
+    "paypal",
+    "google-pay",
+    "apple-pay",
+    "spain",
+    "europe",
+    "ecommerce"
+  ],
+  "author": "MONEI <info@monei.com> (https://monei.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MONEI/medusa-payment-monei"
+  },
+  "homepage": "https://docs.monei.com",
+  "bugs": {
+    "url": "https://github.com/MONEI/medusa-payment-monei/issues"
+  },
+  "peerDependencies": {
+    "@medusajs/framework": "^2.0.0"
+  },
+  "dependencies": {
+    "@monei-js/node-sdk": "^1.9.0"
+  },
+  "devDependencies": {
+    "@medusajs/framework": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
