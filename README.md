@@ -155,7 +155,7 @@ All payment methods enabled in your MONEI Dashboard are automatically available:
 | **Google Pay** | Android/Chrome payments |
 | **Apple Pay** | iOS/Safari payments |
 | **Click to Pay** | Visa/Mastercard secure remote commerce |
-| **BNPL** | Buy now, pay later (Cofidis, Klarna) |
+| **BNPL** | Buy now, pay later (MONEI Flex) |
 | **MB Way** | Portuguese mobile payments |
 | **Multibanco** | Portuguese bank transfers |
 | **SEPA DD** | Euro direct debit |
@@ -240,7 +240,7 @@ Then in `medusa-config.ts`:
 
 ## About MONEI
 
-[MONEI](https://monei.com) is a licensed Payment Institution regulated by Banco de España (#6911) and a SWIFT member (BIC: MDIPES22). MONEI provides a unified payments platform for European merchants with direct acquiring for Bizum and multi-acquirer card processing.
+[MONEI](https://monei.com) is a licensed Payment Institution regulated by Banco de España (#6911) and a SWIFT member (BIC: MONIES2M). MONEI provides a unified payments platform for European merchants with direct acquiring for Bizum and multi-acquirer card processing.
 
 ## License
 
