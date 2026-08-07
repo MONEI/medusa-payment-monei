@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-08-07)
+
+### Chores
+
+- Add Medusa integrations-page keywords (`medusa-plugin-integration`, `medusa-v2`, `medusa-plugin-payment`) so the plugin is listed on medusajs.com integrations
+
 ## 0.1.0 (2026-04-12)
 
 ### Features
