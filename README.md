@@ -4,7 +4,7 @@
 
 The plugin contains:
 
-- Five payment providers: card, Bizum, PayPal, MB WAY and Multibanco. The card provider also takes Apple Pay and Google Pay through the monei.js `PaymentRequest` component (embedded and express checkout).
+- Five payment providers: card, Bizum, PayPal, MB WAY and Multibanco. The card provider also takes Apple Pay and Google Pay: on the Hosted Payment Page next to the card form, and through the monei.js `PaymentRequest` component in embedded and express checkout.
 - Store API routes for saved cards and for the live payment status.
 - Subscribers that report orphan payments, release AUTH holds whose cart never became an order, and remove stale MONEI customers.
 
@@ -36,7 +36,7 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
 
 - **Session data changed.** `client_secret` is removed. A create-session request whose `data` holds a key the provider sets (`id`, `session_id`, `amount`, ...) is refused. See [Session data](#session-data).
 - **Partial capture is refused.** MONEI payments capture in full only. See [Limits](#limits).
-- **Only five methods.** 0.1.x let MONEI offer every method enabled on the account. 1.0.0 offers card, Bizum, PayPal, MB WAY and Multibanco, one per provider. Apple Pay and Google Pay come through the card provider and monei.js `PaymentRequest` only.
+- **Only five methods.** 0.1.x let MONEI offer every method enabled on the account. 1.0.0 offers card, Bizum, PayPal, MB WAY and Multibanco, one per provider. Apple Pay and Google Pay come through the card provider (Hosted Payment Page, or monei.js `PaymentRequest`).
 
 ## Requirements
 
@@ -129,7 +129,7 @@ Medusa names each provider `pp_<identifier>_<id>`. Enable the providers on your 
 
 | Method                            | Provider id                 | Callback URL                                      |
 | --------------------------------- | --------------------------- | ------------------------------------------------- |
-| Card (Apple Pay, Google Pay via monei.js) | `pp_monei_monei`    | `<backendUrl>/hooks/payment/monei_monei`            |
+| Card (Apple Pay, Google Pay)              | `pp_monei_monei`    | `<backendUrl>/hooks/payment/monei_monei`            |
 | Bizum                             | `pp_monei-bizum_monei`      | `<backendUrl>/hooks/payment/monei-bizum_monei`      |
 | PayPal                            | `pp_monei-paypal_monei`     | `<backendUrl>/hooks/payment/monei-paypal_monei`     |
 | MB WAY                            | `pp_monei-mbway_monei`      | `<backendUrl>/hooks/payment/monei-mbway_monei`      |
