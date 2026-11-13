@@ -1,0 +1,10 @@
+allowBuilds:
+  "@medusajs/telemetry": false
+  "@swc/core": true
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: false
+# `medusa plugin:build` bundles the admin entry it generates, which imports
+# @medusajs/admin-shared; Rollup resolves it from the project root only.
+publicHoistPattern:
+  - "@medusajs/admin-shared"

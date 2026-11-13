@@ -1,47 +1,77 @@
 {
   "name": "medusa-payment-monei",
   "version": "0.1.1",
-  "description": "MONEI payment provider for Medusa v2. Accept Cards, Bizum, PayPal, Google Pay, Apple Pay and more.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
-    "prepare": "npm run build"
-  },
+  "description": "MONEI payment plugin for Medusa v2. Accept cards, Apple Pay, Google Pay, Bizum, PayPal, MB WAY and Multibanco.",
   "keywords": [
-    "medusa-plugin-integration",
-    "medusa-v2",
-    "medusa-plugin-payment",
+    "bizum",
+    "europe",
     "medusa",
     "medusa-payment",
+    "medusa-plugin",
+    "medusa-plugin-integration",
+    "medusa-plugin-payment",
+    "medusa-v2",
     "monei",
-    "bizum",
     "payment",
-    "spain",
-    "europe"
+    "spain"
   ],
-  "author": "MONEI <info@monei.com> (https://monei.com)",
+  "homepage": "https://docs.monei.com",
   "license": "MIT",
+  "author": "MONEI <info@monei.com> (https://monei.com)",
   "repository": {
     "type": "git",
     "url": "https://github.com/MONEI/medusa-payment-monei"
   },
-  "homepage": "https://docs.monei.com",
-  "peerDependencies": {
-    "@medusajs/framework": ">=2.0.0"
+  "files": [
+    ".medusa/server"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    "./providers/*": "./.medusa/server/src/providers/*/index.js",
+    "./*": "./.medusa/server/src/*.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "medusa plugin:build",
+    "dev": "medusa plugin:develop",
+    "test": "medusa plugin:build && vp test run",
+    "test:watch": "vp test",
+    "e2e:start": "bash e2e/scripts/start.sh",
+    "e2e": "bash e2e/scripts/run.sh",
+    "e2e:stop": "bash e2e/scripts/stop.sh",
+    "release": "release-it",
+    "prepublishOnly": "medusa plugin:build",
+    "prepare": "vp config"
   },
   "dependencies": {
-    "@monei-js/node-sdk": "^1.9.0"
+    "@monei-js/node-sdk": "^3.3.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@medusajs/cli": "2.22.3",
+    "@medusajs/framework": "2.22.3",
+    "@medusajs/medusa": "2.22.3",
+    "@playwright/test": "1.64.1",
+    "@release-it/conventional-changelog": "12.0.2",
+    "@swc/core": "1.16.21",
+    "@types/node": "24.19.2",
+    "axios-mock-adapter": "2.1.0",
+    "dotenv": "18.0.9",
+    "release-it": "21.1.2",
+    "ts-node": "10.9.2",
+    "typescript": "6.0.3",
+    "vite-plus": "1.5.0"
+  },
+  "peerDependencies": {
+    "@medusajs/framework": ">=2.17.0 <3",
+    "@medusajs/medusa": ">=2.17.0 <3"
   },
   "engines": {
-    "node": ">=20"
-  }
+    "node": ">=22.22.0"
+  },
+  "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
 }
