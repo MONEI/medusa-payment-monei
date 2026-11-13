@@ -1,0 +1,84 @@
+# Host ports 19000 (backend) and 18000 (storefront) avoid the usual 9000/8000 clashes.
+# Driven by e2e/scripts/{start,stop}.sh. MONEI_TEST_API_KEY comes from e2e/.env, which
+# compose reads for interpolation; only the backend receives it.
+name: medusa-payment-monei-e2e
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: medusa
+      POSTGRES_PASSWORD: medusa
+      POSTGRES_DB: medusa
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medusa"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:8.2-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        MEDUSA_VERSION: ${MEDUSA_VERSION:-2.22.3}
+        E2E_EVENT_BUS: ${E2E_EVENT_BUS:-redis}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # MONEI_BACKEND_URL: the tunnel URL, written by e2e/scripts/tunnel.sh.
+    env_file:
+      - path: ./.generated/backend.env
+        required: false
+    environment:
+      # Medusa turns SSL on for every host but localhost; this Postgres has none.
+      DATABASE_URL: postgres://medusa:medusa@postgres:5432/medusa?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      E2E_CORS: http://localhost:18000
+      MONEI_API_KEY: ${MONEI_TEST_API_KEY:?MONEI_TEST_API_KEY is missing from e2e/.env}
+      MONEI_CAPTURE: ${MONEI_CAPTURE:-true}
+      MONEI_RELEASE_HOLDS_AFTER_MINUTES: "1"
+    ports:
+      - "19000:9000"
+
+  storefront:
+    build: ./storefront
+    depends_on:
+      - backend
+    # NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY, written by e2e/scripts/seed.ts.
+    env_file:
+      - path: ./.generated/storefront.env
+        required: false
+    environment:
+      MEDUSA_BACKEND_URL: http://backend:9000
+      NEXT_PUBLIC_BASE_URL: http://localhost:18000
+      NEXT_PUBLIC_DEFAULT_REGION: es
+    ports:
+      - "18000:8000"
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.7
+    command: ["tunnel", "--no-autoupdate", "--url", "http://backend:9000"]
+
+  # Browser for the visual project (e2e/playwright.config.ts): screenshots render in the
+  # official Playwright image, so local Linux runs and CI compare the same pixels. The
+  # image tag and the run-server version must equal @playwright/test in package.json:
+  # the browser build, and so the pixels, come with that version. Host network: the
+  # browser opens http://localhost:18000 like the host runner.
+  visual-browser:
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    network_mode: host
+    init: true
+    user: pwuser
+    working_dir: /home/pwuser
+    command:
+      ["npx", "-y", "playwright@1.64.1", "run-server", "--port", "13333", "--host", "127.0.0.1"]
