@@ -1,0 +1,44 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        with:
+          node-version-file: .nvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Check (format, lint, types)
+        run: vp check
+
+      # Builds first: the packaging test reads .medusa/server.
+      - name: Test
+        run: vp run test
+
+  # No skip without the secret: a run that cannot pay against MONEI fails.
+  e2e:
+    needs: test
+    uses: ./.github/workflows/e2e-nightly.yml
+    secrets:
+      MONEI_TEST_API_KEY: ${{ secrets.MONEI_TEST_API_KEY }}
+      MONEI_TEST_ACCOUNT_ID: ${{ secrets.MONEI_TEST_ACCOUNT_ID }}
