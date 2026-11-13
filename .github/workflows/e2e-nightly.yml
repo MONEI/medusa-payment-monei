@@ -1,0 +1,101 @@
+name: E2E
+
+# Nightly run, plus the e2e job of test.yml on every PR (workflow_call).
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      # Not required here: e2e:start fails with a clear message when it is missing.
+      MONEI_TEST_API_KEY:
+        required: false
+      MONEI_TEST_ACCOUNT_ID:
+        required: false
+
+permissions:
+  contents: read
+
+# Every run shares one MONEI and PayPal sandbox, so a PR run (workflow_call) and the
+# nightly never run at the same time. A literal group: in a workflow_call run,
+# github.workflow is the caller's name.
+concurrency:
+  group: e2e-sandbox
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: E2E (Medusa ${{ matrix.medusa }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # The jobs share one sandbox too.
+      max-parallel: 1
+      matrix:
+        include:
+          # The pinned version: every project.
+          - medusa: 2.22.3
+            event-bus: redis
+            playwright-args: ""
+          # The lowest supported version, on the path of hosted card AUTH stores (the AUTH
+          # project holds the customer-path and stock-out specs). Local event bus: the 2.17.0
+          # Redis event bus never lets the server start (e2e/backend/Dockerfile).
+          - medusa: 2.17.0
+            event-bus: local
+            playwright-args: --project=auth
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        with:
+          node-version-file: .nvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Fails first, before any build, without MONEI_TEST_API_KEY. Then builds and packs
+      # the plugin, boots the stack in Docker, opens the tunnel and seeds.
+      - name: Start the e2e stack
+        env:
+          MONEI_TEST_API_KEY: ${{ secrets.MONEI_TEST_API_KEY }}
+          MONEI_TEST_ACCOUNT_ID: ${{ secrets.MONEI_TEST_ACCOUNT_ID }}
+          MEDUSA_VERSION: ${{ matrix.medusa }}
+          E2E_EVENT_BUS: ${{ matrix.event-bus }}
+        run: pnpm e2e:start
+
+      # The specs call MONEI, and the AUTH fixture recreates the backend through compose.
+      - name: Run Playwright
+        env:
+          MONEI_TEST_API_KEY: ${{ secrets.MONEI_TEST_API_KEY }}
+          MONEI_TEST_ACCOUNT_ID: ${{ secrets.MONEI_TEST_ACCOUNT_ID }}
+          PLAYWRIGHT_ARGS: ${{ matrix.playwright-args }}
+        # Unquoted on purpose: the args split into words.
+        run: |
+          # shellcheck disable=SC2086
+          pnpm e2e $PLAYWRIGHT_ARGS
+
+      # Log masking does not cover uploaded files. The key stays out of them: the suite
+      # calls MONEI through the node SDK, never through the traced browser or request.
+      - name: Upload the report and traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report-medusa-${{ matrix.medusa }}
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop the e2e stack
+        if: ${{ always() }}
+        run: pnpm e2e:stop
