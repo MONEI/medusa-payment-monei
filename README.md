@@ -2,11 +2,13 @@
 
 [MONEI](https://monei.com) payment plugin for Medusa v2.
 
+The setup guide with screenshots is in the [MONEI documentation](https://docs.monei.com/e-commerce/medusa/).
+
 The plugin contains:
 
 - Five payment providers: card, Bizum, PayPal, MB WAY and Multibanco. The card provider also takes Apple Pay and Google Pay: on the Hosted Payment Page next to the card form, and through the monei.js `PaymentRequest` component in embedded and express checkout.
 - Store API routes for saved cards and for the live payment status.
-- Subscribers that report orphan payments, release AUTH holds whose cart never became an order, and remove stale MONEI customers.
+- Subscribers that report orphan payments, release AUTH holds whose cart never became an order, and remove account holders whose MONEI customer was deleted.
 
 ## Upgrade from 0.1.x (breaking changes)
 
@@ -109,7 +111,7 @@ When a release does not cancel the payment, the plugin logs an error and emits `
   payment_id: string; // MONEI payment id
   session_id: string; // Medusa payment session id
   cart_id: string | null;
-  amount: number | null; // major units, null when MONEI could not be reached
+  amount: number | null; // major units, null when the release failed before it got the payment from MONEI
   currency: string | null;
   reason: string;
 }
@@ -155,7 +157,7 @@ In both formats the body is only a pointer. The plugin fetches the payment from 
 - `initiatePayment` creates a MONEI payment. It does not charge. The `orderId` of the MONEI payment is the Medusa payment session id.
 - Every status decision fetches the payment from MONEI. Session data and callback bodies are only pointers.
 - The callback completes the cart when the buyer does not come back to the storefront.
-- When Medusa deletes a session (for example, after a cart total change), the plugin cancels its `PENDING` or `AUTHORIZED` MONEI payment. This is best effort: a refused cancel is logged at warn level.
+- When Medusa deletes a session (for example, after a cart total change), the plugin cancels its `PENDING` or `AUTHORIZED` MONEI payment. It does not cancel the payment of a session that Medusa already authorized. This is best effort: a refused cancel is logged as an error for an `AUTHORIZED` payment, and as a warning otherwise.
 - The plugin sends the customer of a signed-in shopper to MONEI, and a billing address. MONEI uses its country to pick the payment processors and methods.
   - The country is `billing_country` from the session data, when the storefront sends it. Send the cart's billing address country. Without it, the plugin sends the country of the signed-in customer's default billing address. When there is no such address either, MONEI uses the country of the buyer's IP address.
   - The signed-in customer's default billing address is sent in full only when it is in that country (or no `billing_country` was sent). Otherwise only the country is sent.
