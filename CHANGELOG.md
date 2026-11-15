@@ -1,5 +1,15 @@
 # Changelog
 
+# [1.0.0](https://github.com/MONEI/medusa-payment-monei/compare/v0.1.1...v1.0.0) (2026-11-15)
+
+### Features
+
+* rewrite as a Medusa v2 plugin ([720eca3](https://github.com/MONEI/medusa-payment-monei/commit/720eca31bdf279437ca4b81c03c29e26c013ce89))
+
+### BREAKING CHANGES
+
+* amounts are Medusa major units; the package is a plugin; see README upgrade notes.
+
 ## 0.1.1 (2026-08-07)
 
 ### Chores
