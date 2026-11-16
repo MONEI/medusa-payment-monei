@@ -13,6 +13,17 @@ export const MONEI_PROVIDER_TITLES: Record<string, string> = {
   [MONEI_MULTIBANCO]: "Multibanco",
 }
 
+/**
+ * Logos in public/images/payment-methods, from the MONEI WooCommerce plugin. The card
+ * provider shows the accepted card brands instead (card-brands.tsx).
+ */
+export const MONEI_PROVIDER_LOGOS: Record<string, string> = {
+  [MONEI_BIZUM]: "/images/payment-methods/bizum.svg",
+  [MONEI_PAYPAL]: "/images/payment-methods/paypal.svg",
+  [MONEI_MBWAY]: "/images/payment-methods/mbway.svg",
+  [MONEI_MULTIBANCO]: "/images/payment-methods/multibanco.svg",
+}
+
 export const isMonei = (providerId?: string) =>
   !!providerId && providerId in MONEI_PROVIDER_TITLES
 
