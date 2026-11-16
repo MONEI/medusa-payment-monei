@@ -1,5 +1,11 @@
 # Changelog
 
+# [1.1.0](https://github.com/MONEI/medusa-payment-monei/compare/v1.0.0...v1.1.0) (2026-11-16)
+
+### Features
+
+* default backendUrl to MEDUSA_BACKEND_URL ([3266542](https://github.com/MONEI/medusa-payment-monei/commit/3266542b0f63f12b387726a42d3f6607e724afe0))
+
 # [1.0.0](https://github.com/MONEI/medusa-payment-monei/compare/v0.1.1...v1.0.0) (2026-11-15)
 
 ### Features
