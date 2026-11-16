@@ -83,6 +83,11 @@ jobs:
           # shellcheck disable=SC2086
           pnpm e2e $PLAYWRIGHT_ARGS
 
+      # In the job log, not in the artifact: log masking covers only the job log.
+      - name: Print the backend logs
+        if: ${{ !cancelled() }}
+        run: bash e2e/scripts/backend-logs.sh
+
       # Log masking does not cover uploaded files. The key stays out of them: the suite
       # calls MONEI through the node SDK, never through the traced browser or request.
       - name: Upload the report and traces

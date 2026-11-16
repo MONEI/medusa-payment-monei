@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { BACKEND_LOCAL_URL, COMPOSE_FILE, fixtures } from "./env.ts";
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { BACKEND_LOCAL_URL, COMPOSE_FILE, GENERATED_DIR, fixtures } from "./env.ts";
 
 /** Admin user the seed creates. Not a secret: a local throwaway stack. */
 export const ADMIN = { email: "admin@monei-e2e.test", password: "e2e-admin-pass" };
@@ -203,8 +205,14 @@ export async function waitForBackend(timeoutMs = 180_000): Promise<void> {
   }
 }
 
-/** Recreate only the backend with another `capture` mode; the tunnel URL is kept. */
+/**
+ * Recreate only the backend with another `capture` mode; the tunnel URL is kept. The log of
+ * the replaced container is saved in GENERATED_DIR first: recreating it deletes the log,
+ * and CI prints the saved logs (scripts/backend-logs.sh).
+ */
 export async function restartBackend(capture: boolean): Promise<void> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  writeFileSync(resolve(GENERATED_DIR, `backend-${stamp}.log`), backendLog().join("\n"));
   compose(["up", "-d", "--no-deps", "--force-recreate", "backend"], {
     MONEI_CAPTURE: String(capture),
   });
