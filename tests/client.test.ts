@@ -4,7 +4,7 @@ import {
   createMedusaContainer,
   defineConfig,
 } from "@medusajs/framework/utils";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import pkg from "../package.json";
 import {
   buildUserAgent,
@@ -89,11 +89,6 @@ describe("validateOptions", () => {
     );
   });
 
-  it("rejects a missing backendUrl", () => {
-    // Bug: without it there is no callbackUrl and MONEI never notifies the store.
-    expect(() => validateOptions({ apiKey: "pk_test_x" })).toThrow("backendUrl");
-  });
-
   it("rejects a relative backendUrl", () => {
     expect(() => validateOptions({ apiKey: "pk_test_x", backendUrl: "/api" })).toThrow(
       "absolute http(s) URL",
@@ -111,6 +106,33 @@ describe("validateOptions", () => {
     expect(
       validateOptions({ apiKey: "pk_test_x", backendUrl: "https://shop.test/medusa/" }).backendUrl,
     ).toBe("https://shop.test/medusa");
+  });
+});
+
+describe("validateOptions backendUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects a missing backendUrl when MEDUSA_BACKEND_URL is not set either", () => {
+    // Bug: without it there is no callbackUrl and MONEI never notifies the store.
+    vi.stubEnv("MEDUSA_BACKEND_URL", "");
+    expect(() => validateOptions({ apiKey: "pk_test_x" })).toThrow("MEDUSA_BACKEND_URL");
+  });
+
+  it("falls back to MEDUSA_BACKEND_URL, and the option wins over it", () => {
+    vi.stubEnv("MEDUSA_BACKEND_URL", "https://medusa.shop.test/\n");
+    expect(validateOptions({ apiKey: "pk_test_x" }).backendUrl).toBe("https://medusa.shop.test");
+    expect(
+      validateOptions({ apiKey: "pk_test_x", backendUrl: "https://shop.test" }).backendUrl,
+    ).toBe("https://shop.test");
+  });
+
+  it("names MEDUSA_BACKEND_URL when its value is not an absolute URL", () => {
+    vi.stubEnv("MEDUSA_BACKEND_URL", "/");
+    expect(() => validateOptions({ apiKey: "pk_test_x" })).toThrow(
+      'MEDUSA_BACKEND_URL must be an absolute http(s) URL, got "/"',
+    );
   });
 });
 

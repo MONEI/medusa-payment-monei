@@ -2,7 +2,10 @@ export type MoneiOptions = {
   apiKey: string;
   /** Partner accounts only: the merchant account to act for. */
   accountId?: string;
-  /** Public base URL of the Medusa backend; MONEI posts callbacks to it. */
+  /**
+   * Public base URL of the Medusa backend; MONEI posts callbacks to it. Defaults to the
+   * MEDUSA_BACKEND_URL environment variable.
+   */
   backendUrl: string;
   /** `true` (default) charges at once (SALE); `false` only authorizes (AUTH, card and PayPal). */
   capture?: boolean;

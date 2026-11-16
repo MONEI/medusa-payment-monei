@@ -68,7 +68,6 @@ module.exports = defineConfig({
             id: "monei",
             options: {
               apiKey: required("MONEI_API_KEY"),
-              backendUrl: required("MONEI_BACKEND_URL"),
               capture: capture(),
               releaseUnorderedHoldsAfterMinutes: releaseAfterMinutes(),
             },

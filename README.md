@@ -20,7 +20,7 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
   - When they are the same, the amounts are correct. You can refund these orders from Medusa.
   - When the MONEI amount is 1/100 of the total, refund these orders in the MONEI dashboard, not from Medusa. A refund from Medusa asks for 100 times what MONEI took.
 - **The package is a Medusa plugin.** Add it to `plugins`. The provider `resolve` path is now `medusa-payment-monei/providers/monei`.
-- **`backendUrl` is required.** The plugin registers the callback URL on every payment. You do not need a webhook in the MONEI dashboard.
+- **The public URL of the Medusa backend is required.** Set `MEDUSA_BACKEND_URL`, or the `backendUrl` option. The plugin registers the callback URL on every payment. You do not need a webhook in the MONEI dashboard.
 - **Delete the 0.1.x webhook.** If you added a webhook for Medusa in the MONEI dashboard (Settings, Webhooks), delete it. The plugin accepts its events, but each payment then reaches Medusa twice. See [Callbacks](#callbacks).
 - **Payments created before the upgrade have no callback URL.** 0.1.x did not register one, so MONEI sends no callback for these payments. Only a webhook in the MONEI dashboard sends their events. Capture, cancel and refund from the Medusa admin still work: the plugin fetches each payment from MONEI and does not use the amount or status that 0.1.x stored. Without a dashboard webhook, a checkout that was open at the upgrade completes only when the buyer comes back to the storefront.
 - **A checkout whose MONEI amount is not the cart amount cannot complete.** 1.0.0 compares the MONEI payment with the Medusa session amount and currency, in cents, before it authorizes. A checkout open at the upgrade with a 0.1.x payment of 1/100 of the cart is refused, and the error log names the payment. Cancel it (`AUTHORIZED`) or refund it (`SUCCEEDED`) in the MONEI dashboard.
@@ -73,7 +73,6 @@ module.exports = defineConfig({
             id: "monei",
             options: {
               apiKey: process.env.MONEI_API_KEY,
-              backendUrl: process.env.MONEI_BACKEND_URL,
             },
           },
         ],
@@ -83,6 +82,8 @@ module.exports = defineConfig({
 });
 ```
 
+Set `MEDUSA_BACKEND_URL` to the public URL of your Medusa backend, for example `https://medusa.example.com`. MONEI sends the payment callbacks to this URL. Medusa has no setting of its own for it.
+
 The provider `id` must be `"monei"`. The callback URL, the store routes and the subscriber use this id. Another id breaks them.
 
 ### Options
@@ -90,7 +91,7 @@ The provider `id` must be `"monei"`. The callback URL, the store routes and the 
 | Option       | Type      | Required | Description                                                                                                                                  |
 | ------------ | --------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apiKey`     | `string`  | Yes      | MONEI API key. A test mode key creates test payments.                                                                                        |
-| `backendUrl` | `string`  | Yes      | Public base URL of the Medusa backend, for example `https://api.example.com`. It must be an absolute `http` or `https` URL. A trailing slash is removed. |
+| `backendUrl` | `string`  | No       | Public base URL of the Medusa backend. Default: the `MEDUSA_BACKEND_URL` environment variable. One of the two must be set. It must be an absolute `http` or `https` URL. A trailing slash is removed. |
 | `accountId`  | `string`  | No       | Partner accounts only: the merchant account to act for.                                                                                      |
 | `capture`    | `boolean` | No       | `true` (default) charges at once (SALE). `false` only authorizes (AUTH), for card and PayPal. Bizum, MB WAY and Multibanco always use SALE. A string such as `"false"` is refused. |
 | `releaseUnorderedHoldsAfterMinutes` | `number` | No | Minutes after an `AUTHORIZED` callback after which the plugin cancels the hold when its cart has no order. Default `30`. `0` turns the release off. Must be a whole number from `0` to `10080` (7 days). See [Capture mode](#capture-mode). |

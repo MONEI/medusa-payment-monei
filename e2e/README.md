@@ -88,7 +88,7 @@ The HTML report is in `e2e/playwright-report`. Traces, screenshots and videos of
 
 ### Tunnel
 
-MONEI sends callbacks to a public URL. The `tunnel` service opens a cloudflared quick tunnel to the backend. `pnpm e2e:start` writes its URL to `e2e/.generated/backend.env` as `MONEI_BACKEND_URL`, and the backend uses it as the plugin's `backendUrl`. The URL changes on every start.
+MONEI sends callbacks to a public URL. The `tunnel` service opens a cloudflared quick tunnel to the backend. `pnpm e2e:start` writes its URL to `e2e/.generated/backend.env` as `MEDUSA_BACKEND_URL`, and the plugin uses it as its `backendUrl` (the documented setup, without the option). The URL changes on every start.
 
 ### Storefront
 
