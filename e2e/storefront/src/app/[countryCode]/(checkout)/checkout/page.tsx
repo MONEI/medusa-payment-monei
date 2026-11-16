@@ -26,8 +26,15 @@ export default async function Checkout() {
   const customer = await retrieveCustomer()
 
   const jar = await cookies()
+  // The cookie (set by the e2e specs) wins; MONEI_FLOW_DEFAULT sets the flow of a deployment.
+  const checkoutFlow = (cookie?: string): MoneiUi["flow"] =>
+    cookie === "embedded" || cookie === "hosted"
+      ? cookie
+      : process.env.MONEI_FLOW_DEFAULT === "embedded"
+        ? "embedded"
+        : "hosted"
   const moneiUi: MoneiUi = {
-    flow: jar.get(MONEI_FLOW_COOKIE)?.value === "embedded" ? "embedded" : "hosted",
+    flow: checkoutFlow(jar.get(MONEI_FLOW_COOKIE)?.value),
     cardLayout:
       jar.get(MONEI_CARD_LAYOUT_COOKIE)?.value === "split" ? "split" : "single",
   }

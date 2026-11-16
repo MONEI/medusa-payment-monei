@@ -20,7 +20,10 @@ import {
   updateMoneiExpressAddress,
 } from "./actions"
 
-/** Express buttons are opt-in per browser, so one storefront build serves every spec. */
+/**
+ * Express buttons are opt-in per browser, so one storefront build serves every spec. A
+ * deployment built with NEXT_PUBLIC_MONEI_EXPRESS=on shows them to everyone.
+ */
 const MONEI_EXPRESS_COOKIE = "monei_express=on"
 
 type Source = { variantId: string } | { cartId: string }
@@ -37,7 +40,10 @@ export default function MoneiExpress({
 }: Source & { countryCode: string }) {
   const [enabled, setEnabled] = useState(false)
   useEffect(() => {
-    setEnabled(document.cookie.split("; ").includes(MONEI_EXPRESS_COOKIE))
+    setEnabled(
+      document.cookie.split("; ").includes(MONEI_EXPRESS_COOKIE) ||
+        process.env.NEXT_PUBLIC_MONEI_EXPRESS === "on"
+    )
   }, [])
   const accountId = process.env.NEXT_PUBLIC_MONEI_ACCOUNT_ID
   if (!enabled || !accountId) return null
