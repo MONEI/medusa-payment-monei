@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a cloudflared quick tunnel to the backend and writes its URL to
-# .generated/backend.env, which the backend reads as MONEI_BACKEND_URL (callbackUrl base).
+# .generated/backend.env, which the backend reads as MEDUSA_BACKEND_URL (the plugin's callbackUrl base).
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -19,5 +19,5 @@ wait_for 90 tunnel "the cloudflared tunnel to register" registered
 url="$(tunnel_url)"
 [ -n "$url" ] || fail "cloudflared registered a connection but printed no trycloudflare.com URL"
 
-echo "MONEI_BACKEND_URL=$url" >"$GENERATED_DIR/backend.env"
+echo "MEDUSA_BACKEND_URL=$url" >"$GENERATED_DIR/backend.env"
 echo "tunnel: $url"

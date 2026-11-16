@@ -35,7 +35,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # MONEI_BACKEND_URL: the tunnel URL, written by e2e/scripts/tunnel.sh.
+    # MEDUSA_BACKEND_URL: the tunnel URL, written by e2e/scripts/tunnel.sh.
     env_file:
       - path: ./.generated/backend.env
         required: false

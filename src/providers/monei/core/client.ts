@@ -23,19 +23,23 @@ export function validateOptions(options: Partial<MoneiOptions> | undefined): Mon
   if (!options || !apiKey) {
     throw new Error("Required option `apiKey` is missing in the MONEI payment provider");
   }
-  if (!options.backendUrl) {
-    throw new Error("Required option `backendUrl` is missing in the MONEI payment provider");
+  // Medusa has no setting for its own public URL. MEDUSA_BACKEND_URL is the variable
+  // Medusa's docs use for it (`admin.backendUrl`).
+  const backendUrl = options.backendUrl || process.env.MEDUSA_BACKEND_URL?.trim();
+  const source = options.backendUrl ? "Option `backendUrl`" : "MEDUSA_BACKEND_URL";
+  if (!backendUrl) {
+    throw new Error(
+      "The MONEI payment provider needs the public URL of the Medusa backend: set the `backendUrl` option or the MEDUSA_BACKEND_URL environment variable",
+    );
   }
   let protocol: string;
   try {
-    protocol = new URL(options.backendUrl).protocol;
+    protocol = new URL(backendUrl).protocol;
   } catch {
     protocol = "";
   }
   if (protocol !== "http:" && protocol !== "https:") {
-    throw new Error(
-      `Option \`backendUrl\` must be an absolute http(s) URL, got "${options.backendUrl}"`,
-    );
+    throw new Error(`${source} must be an absolute http(s) URL, got "${backendUrl}"`);
   }
   // An env string such as "false" would silently charge at once (SALE).
   if (options.capture !== undefined && typeof options.capture !== "boolean") {
@@ -51,7 +55,7 @@ export function validateOptions(options: Partial<MoneiOptions> | undefined): Mon
   return {
     ...options,
     apiKey,
-    backendUrl: options.backendUrl.replace(/\/+$/, ""),
+    backendUrl: backendUrl.replace(/\/+$/, ""),
     releaseUnorderedHoldsAfterMinutes: release,
   };
 }

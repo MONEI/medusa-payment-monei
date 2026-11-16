@@ -44,8 +44,8 @@ export function tunnelUrl(): string {
   if (!existsSync(BACKEND_ENV_FILE)) {
     throw new Error(`${BACKEND_ENV_FILE} is missing; run pnpm e2e:start first`);
   }
-  const url = parse(readFileSync(BACKEND_ENV_FILE)).MONEI_BACKEND_URL;
-  if (!url) throw new Error(`MONEI_BACKEND_URL is missing from ${BACKEND_ENV_FILE}`);
+  const url = parse(readFileSync(BACKEND_ENV_FILE)).MEDUSA_BACKEND_URL;
+  if (!url) throw new Error(`MEDUSA_BACKEND_URL is missing from ${BACKEND_ENV_FILE}`);
   return url;
 }
 

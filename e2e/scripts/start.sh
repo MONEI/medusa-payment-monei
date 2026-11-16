@@ -32,7 +32,7 @@ wait_for 300 backend "the backend /health" backend_healthy
 installed="$(compose exec -T backend node -p 'require("/app/node_modules/@medusajs/framework/package.json").version')"
 [ "$installed" = "$MEDUSA_VERSION" ] || fail "the backend runs @medusajs/framework $installed, not MEDUSA_VERSION $MEDUSA_VERSION"
 
-tunnel_healthy() { curl -fsS "$(sed -n 's/^MONEI_BACKEND_URL=//p' "$GENERATED_DIR/backend.env")/health"; }
+tunnel_healthy() { curl -fsS "$(sed -n 's/^MEDUSA_BACKEND_URL=//p' "$GENERATED_DIR/backend.env")/health"; }
 wait_for 120 tunnel "the backend /health through the tunnel" tunnel_healthy
 
 node "$E2E_DIR/scripts/seed.ts"
