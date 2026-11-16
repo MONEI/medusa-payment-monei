@@ -3,6 +3,7 @@
 // cart a new session, so the buyer can pay again once the product is back in stock.
 import { expect, test } from "@playwright/test";
 import {
+  blockReturnPage,
   CARDS,
   COUNTRY,
   METHODS,
@@ -41,13 +42,13 @@ test("stock runs out while the buyer pays and closes the tab: refunded, and the 
   await setLimitedStock(0);
 
   // Only the callback runs cart completion, and with it core's refund.
-  await page.route("**/checkout/monei/return**", (route) => route.abort());
+  const closeTab = await blockReturnPage(page);
   await payOnHostedPage(page, CARDS.visaChallenge);
   await answerThreeDsChallenge(page, "complete");
   await expect
     .poll(async () => (await getPayment(paymentId)).status, { timeout: 120_000 })
     .toBe("REFUNDED");
-  await page.close();
+  await closeTab();
 
   expect(await ordersByEmail(email), "no order for the cart").toEqual([]);
   expect((await storeCart(cartId)).completed_at, "the cart stays open").toBeNull();

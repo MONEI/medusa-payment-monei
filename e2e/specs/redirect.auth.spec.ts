@@ -2,6 +2,7 @@
 // (core processPaymentWorkflow), and the money stays held.
 import { expect, test } from "../utils/auth.ts";
 import {
+  blockReturnPage,
   CARDS,
   METHODS,
   answerThreeDsChallenge,
@@ -28,13 +29,13 @@ test("the AUTHORIZED callback places the order when the buyer never returns", as
   const cartId = await cartIdOf(context);
 
   // The buyer never reaches the return page, so only the callback can complete the cart.
-  await page.route("**/checkout/monei/return**", (route) => route.abort());
+  const closeTab = await blockReturnPage(page);
   await payOnHostedPage(page, CARDS.visaChallenge);
   await answerThreeDsChallenge(page, "complete");
   await expect
     .poll(async () => (await getPayment(paymentId)).status, { timeout: 60_000 })
     .toBe("AUTHORIZED");
-  await page.close();
+  await closeTab();
 
   await waitForSubscriber(async () => (await storeCart(cartId)).completed_at, {
     what: "the AUTHORIZED callback to complete the cart",

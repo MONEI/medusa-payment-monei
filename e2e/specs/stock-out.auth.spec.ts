@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../utils/auth.ts";
 import {
+  blockReturnPage,
   CARDS,
   METHODS,
   PRODUCTS,
@@ -89,11 +90,11 @@ test("stock runs out while the buyer pays and closes the tab: the hold is releas
   const { paymentId, cartId } = await payWhileStockRunsOut(page, email);
 
   // Only the callback tries to complete the cart.
-  await page.route("**/checkout/monei/return**", (route) => route.abort());
+  const closeTab = await blockReturnPage(page);
   await payOnHostedPage(page, CARDS.visaChallenge);
   await answerThreeDsChallenge(page, "complete");
   await waitForStatus(paymentId, "AUTHORIZED");
-  await page.close();
+  await closeTab();
 
   await expectHoldReleased(paymentId, cartId, email);
 });
@@ -108,11 +109,11 @@ test("an AUTH order left uncaptured past the release delay keeps its hold", asyn
   const paymentId = hostedPaymentId(page.url());
   const cartId = await cartIdOf(context);
 
-  await page.route("**/checkout/monei/return**", (route) => route.abort());
+  const closeTab = await blockReturnPage(page);
   await payOnHostedPage(page, CARDS.visaChallenge);
   await answerThreeDsChallenge(page, "complete");
   await waitForStatus(paymentId, "AUTHORIZED");
-  await page.close();
+  await closeTab();
 
   await waitForSubscriber(async () => (await storeCart(cartId)).completed_at, {
     what: "the AUTHORIZED callback to complete the cart",

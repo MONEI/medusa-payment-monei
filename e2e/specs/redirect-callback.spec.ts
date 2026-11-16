@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { expect, test } from "@playwright/test";
 import {
+  blockReturnPage,
   CARDS,
   METHODS,
   PRODUCTS,
@@ -55,11 +56,11 @@ test.describe("hosted payment page: callback and return races", () => {
     const session = await moneiSession(cartId);
 
     // The buyer never reaches the return page.
-    await page.route("**/checkout/monei/return**", (route) => route.abort());
+    const closeTab = await blockReturnPage(page);
     await payOnHostedPage(page, CARDS.visaChallenge);
     await answerThreeDsChallenge(page, "complete");
     await waitForStatus(paymentId, "SUCCEEDED");
-    await page.close();
+    await closeTab();
 
     await waitForSubscriber(async () => (await storeCart(cartId)).completed_at, {
       what: "the callback to complete the cart",
