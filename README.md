@@ -9,6 +9,7 @@ The plugin contains:
 - Five payment providers: card, Bizum, PayPal, MB WAY and Multibanco. The card provider also takes Apple Pay and Google Pay: on the Hosted Payment Page next to the card form, and through the monei.js `PaymentRequest` component in embedded and express checkout.
 - Store API routes for saved cards and for the live payment status.
 - Subscribers that report orphan payments, release AUTH holds whose cart never became an order, and remove account holders whose MONEI customer was deleted.
+- A job that registers the storefront domains with Apple Pay at startup. See [Apple Pay domain](#apple-pay-domain).
 
 ## Upgrade from 0.1.x (breaking changes)
 
@@ -82,7 +83,7 @@ module.exports = defineConfig({
 });
 ```
 
-Set `MEDUSA_BACKEND_URL` to the public URL of your Medusa backend, for example `https://medusa.example.com`. MONEI sends the payment callbacks to this URL. Medusa has no setting of its own for it.
+Set `MEDUSA_BACKEND_URL` to the public URL of your Medusa backend, for example `https://medusa.example.com`. MONEI sends the payment callbacks to this URL. Medusa also uses this variable as the default of `admin.backendUrl`.
 
 The provider `id` must be `"monei"`. The callback URL, the store routes and the subscriber use this id. Another id breaks them.
 
@@ -252,7 +253,11 @@ Code: [`monei-express`](e2e/storefront/src/modules/products/components/monei-exp
 
 ### Apple Pay domain
 
-Apple Pay in embedded and express checkout runs on your storefront domain. Register that domain with Apple Pay in the MONEI Dashboard: Settings, Payment methods, Apple Pay, then **Register domain**. See [Register your domain with Apple Pay](https://docs.monei.com/payment-methods/apple-pay/#register-your-domain-with-apple-pay).
+Apple Pay in embedded and express checkout runs on your storefront domain, and Apple needs that domain registered. The plugin registers it about one minute after the backend starts: every `https` origin in Medusa's `storeCors` (`STORE_CORS`), except `localhost`, IP addresses and `docs.medusajs.com`. A repeated registration is accepted, so each start registers again.
+
+1. Serve the [domain association file](https://assets.monei.com/apple-pay/apple-developer-merchantid-domain-association/) on the storefront at `/.well-known/apple-developer-merchantid-domain-association`, with HTTP 200 and no redirect. The example storefront ships it in `public/.well-known/`.
+2. Put the storefront origin in `STORE_CORS`, for example `STORE_CORS=https://shop.example.com`.
+3. Check the backend log for `MONEI Apple Pay: registered shop.example.com`. When MONEI refuses a domain, the log has a warning with the reason, and you can register the domain in the MONEI Dashboard: Settings, Payment methods, Apple Pay, then **Register domain**. See [Register your domain with Apple Pay](https://docs.monei.com/payment-methods/apple-pay/#register-your-domain-with-apple-pay).
 
 ## Store API routes
 

@@ -23,8 +23,8 @@ export function validateOptions(options: Partial<MoneiOptions> | undefined): Mon
   if (!options || !apiKey) {
     throw new Error("Required option `apiKey` is missing in the MONEI payment provider");
   }
-  // Medusa has no setting for its own public URL. MEDUSA_BACKEND_URL is the variable
-  // Medusa's docs use for it (`admin.backendUrl`).
+  // MEDUSA_BACKEND_URL is the variable Medusa's docs use for the backend URL (the
+  // default of `admin.backendUrl`); the server does not know its public URL itself.
   const backendUrl = options.backendUrl || process.env.MEDUSA_BACKEND_URL?.trim();
   const source = options.backendUrl ? "Option `backendUrl`" : "MEDUSA_BACKEND_URL";
   if (!backendUrl) {
