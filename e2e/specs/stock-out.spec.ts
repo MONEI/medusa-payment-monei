@@ -52,8 +52,13 @@ test("stock runs out while the buyer pays and closes the tab: refunded, and the 
 
   expect(await ordersByEmail(email), "no order for the cart").toEqual([]);
   expect((await storeCart(cartId)).completed_at, "the cart stays open").toBeNull();
-  const newSession = await moneiSession(cartId);
-  expect(newSession.id, "core gave the cart a new session").not.toBe(firstSession.id);
+  // MONEI shows the refund before core replaces the session.
+  await expect
+    .poll(async () => (await moneiSession(cartId)).id, {
+      message: "core gave the cart a new session",
+      timeout: 30_000,
+    })
+    .not.toBe(firstSession.id);
 
   await setLimitedStock(1000);
   const again = await context.newPage();
