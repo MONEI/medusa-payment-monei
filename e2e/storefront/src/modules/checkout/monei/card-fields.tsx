@@ -11,6 +11,7 @@ import {
   useCardGroup,
 } from "@monei-js/react-components"
 import ErrorMessage from "@modules/checkout/components/error-message"
+import Input from "@modules/common/components/input"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { MoneiSavedCard, listMoneiSavedCards } from "./actions"
 import { toMinor } from "./constants"
@@ -146,9 +147,9 @@ function NewCard({
 }) {
   return (
     <>
-      <input
-        className="pt-4 pb-1 px-4 h-11 w-full border rounded-md bg-ui-bg-field border-ui-border-base"
-        placeholder="Cardholder name"
+      <Input
+        label="Cardholder name"
+        name="cardholder_name"
         autoComplete="cc-name"
         value={cardholderName}
         onChange={(e) => setCardholderName(e.target.value)}
@@ -163,6 +164,33 @@ function NewCard({
   )
 }
 
+/**
+ * The box of a card field, drawn like the theme's Input (common/components/input): the
+ * monei.js iframe paints only the text, and CardInput's own white wrapper is cleared.
+ * The split parts put their state classes on the element they render into the mount;
+ * CardInput puts none, so SingleCard sets `data-focus` and `data-invalid` from its events.
+ */
+const CARD_MOUNT =
+  "[&>div]:h-11 [&>div]:bg-ui-bg-field [&>div]:border [&>div]:rounded-md [&>div]:border-ui-border-base [&>div:hover]:bg-ui-bg-field-hover [&>div>div]:!bg-transparent [&>.monei-component--focus]:shadow-borders-interactive-with-active [&[data-focus]>div]:shadow-borders-interactive-with-active [&>.monei-component--invalid]:border-rose-500 [&[data-invalid]>div]:border-rose-500"
+
+/** The theme Input's text: its font stack, 14px, 16px inset; the 44px box minus its border. */
+const CARD_STYLE = {
+  base: {
+    height: "42px",
+    padding: "0 16px",
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif',
+    fontSize: "14px",
+    color: "rgb(0, 0, 0)",
+  },
+  input: {
+    fontSize: "14px",
+    color: "rgb(0, 0, 0)",
+    "::placeholder": { color: "rgb(82, 82, 91)" },
+  },
+  invalid: { color: "rgb(225, 29, 72)" },
+}
+
 function SingleCard({
   accountId,
   sessionId,
@@ -172,6 +200,8 @@ function SingleCard({
 }) {
   const { tokenizer } = useMoneiCheckout()
   const card = useRef<CardInputHandle>(null)
+  const [focused, setFocused] = useState(false)
+  const [invalid, setInvalid] = useState(false)
 
   useEffect(() => {
     tokenizer.current = async () =>
@@ -184,15 +214,25 @@ function SingleCard({
   }, [tokenizer])
 
   return (
-    <div id="monei-card-input">
-      <CardInput ref={card} accountId={accountId} sessionId={sessionId} />
+    <div
+      id="monei-card-input"
+      className={CARD_MOUNT}
+      data-focus={focused || undefined}
+      data-invalid={invalid || undefined}
+    >
+      <CardInput
+        ref={card}
+        accountId={accountId}
+        sessionId={sessionId}
+        style={CARD_STYLE}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onChange={(event) => setInvalid(!!event.error)}
+      />
     </div>
   )
 }
 
-// monei.js puts its state classes on the element it renders into the mount.
-const SPLIT_PART =
-  "[&>div]:border [&>div]:rounded-md [&>div]:border-ui-border-base [&>.monei-component--focus]:border-ui-border-interactive [&>.monei-component--invalid]:border-ui-border-error"
 
 function SplitCard({
   accountId,
@@ -202,7 +242,7 @@ function SplitCard({
   sessionId: string
 }) {
   const { tokenizer } = useMoneiCheckout()
-  const group = useCardGroup({ accountId, sessionId })
+  const group = useCardGroup({ accountId, sessionId, style: CARD_STYLE })
 
   useEffect(() => {
     tokenizer.current = () => group.submit()
@@ -213,14 +253,14 @@ function SplitCard({
 
   return (
     <div className="flex flex-col gap-y-2">
-      <div id="monei-card-number" className={SPLIT_PART}>
+      <div id="monei-card-number" className={CARD_MOUNT}>
         <CardNumber group={group} />
       </div>
       <div className="grid grid-cols-2 gap-x-2">
-        <div id="monei-card-expiry" className={SPLIT_PART}>
+        <div id="monei-card-expiry" className={CARD_MOUNT}>
           <CardExpiry group={group} />
         </div>
-        <div id="monei-card-cvc" className={SPLIT_PART}>
+        <div id="monei-card-cvc" className={CARD_MOUNT}>
           <CardCvc group={group} />
         </div>
       </div>
@@ -278,6 +318,7 @@ function MoneiWallet({
         amount={amount}
         currency={currency}
         onSubmit={onSubmit}
+        style={{ height: 44, borderRadius: 6 }}
       />
       <ErrorMessage error={error} data-testid="monei-wallet-error-message" />
     </div>

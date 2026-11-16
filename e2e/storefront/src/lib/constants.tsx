@@ -4,7 +4,12 @@ import { CreditCard } from "@medusajs/icons"
 import Ideal from "@modules/common/icons/ideal"
 import Bancontact from "@modules/common/icons/bancontact"
 import PayPal from "@modules/common/icons/paypal"
-import { MONEI_PROVIDER_TITLES } from "@modules/checkout/monei/constants"
+import MoneiCardBrands from "@modules/checkout/monei/card-brands"
+import {
+  MONEI_CARD,
+  MONEI_PROVIDER_LOGOS,
+  MONEI_PROVIDER_TITLES,
+} from "@modules/checkout/monei/constants"
 
 /* Map of payment provider_id to their title and icon. Add in any payment providers you want to use. */
 export const paymentInfoMap: Record<
@@ -39,7 +44,17 @@ export const paymentInfoMap: Record<
   ...Object.fromEntries(
     Object.entries(MONEI_PROVIDER_TITLES).map(([id, title]) => [
       id,
-      { title, icon: <CreditCard /> },
+      {
+        title,
+        icon:
+          id === MONEI_CARD ? (
+            <MoneiCardBrands />
+          ) : (
+            // A plain <img>: next/image serves no SVG without dangerouslyAllowSVG.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={MONEI_PROVIDER_LOGOS[id]} alt="" className="h-5 w-auto" />
+          ),
+      },
     ])
   ),
 }
