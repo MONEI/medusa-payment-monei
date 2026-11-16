@@ -1,5 +1,11 @@
 # Changelog
 
+# [1.2.0](https://github.com/MONEI/medusa-payment-monei/compare/v1.1.0...v1.2.0) (2026-11-16)
+
+### Features
+
+* register the storefront domains with Apple Pay at startup ([8ecd086](https://github.com/MONEI/medusa-payment-monei/commit/8ecd0865d213ba8905272008b2e4c763f4890183))
+
 # [1.1.0](https://github.com/MONEI/medusa-payment-monei/compare/v1.0.0...v1.1.0) (2026-11-16)
 
 ### Features
