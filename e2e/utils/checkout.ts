@@ -119,6 +119,26 @@ export async function payOnHostedPage(page: Page, card: string): Promise<void> {
   await page.getByTestId("pay-button").click();
 }
 
+/**
+ * Keeps the buyer off the return page, so only the callback can complete the cart.
+ * Returns the tab close. It waits until the hosted page was sent to the return page and
+ * the request was aborted: Playwright leaves a request that reaches a route after
+ * `page.close()` unanswered, and the close then hangs until the context closes.
+ */
+export async function blockReturnPage(page: Page): Promise<() => Promise<void>> {
+  let blocked = false;
+  await page.route("**/checkout/monei/return**", async (route) => {
+    await route.abort();
+    blocked = true;
+  });
+  return async () => {
+    await expect
+      .poll(() => blocked, { message: "the hosted page sent the buyer to the return page" })
+      .toBe(true);
+    await page.close();
+  };
+}
+
 /** Bizum on the hosted page: phone, pay, and wait for MONEI's waiting screen. */
 export async function payBizumOnHostedPage(page: Page): Promise<void> {
   await page.getByTestId("bizum-phone-input").fill(BIZUM_PHONE);

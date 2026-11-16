@@ -5,6 +5,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../utils/auth.ts";
 import {
+  blockReturnPage,
   CARDS,
   METHODS,
   answerThreeDsChallenge,
@@ -101,13 +102,13 @@ test("the buyer closes the tab: the callback places the order, canceling it void
   const { moneiId, cartId } = await payHosted(page, email);
 
   // No return page and no dashboard webhook: only the payment's callbackUrl completes the cart.
-  await page.route("**/checkout/monei/return**", (route) => route.abort());
+  const closeTab = await blockReturnPage(page);
   await payOnHostedPage(page, CARDS.visaChallenge);
   await answerThreeDsChallenge(page, "complete");
   await expect
     .poll(async () => (await getPayment(moneiId)).status, { timeout: 60_000 })
     .toBe("AUTHORIZED");
-  await page.close();
+  await closeTab();
 
   await waitForSubscriber(async () => (await storeCart(cartId)).completed_at, {
     what: "the AUTHORIZED callback to complete the cart",
