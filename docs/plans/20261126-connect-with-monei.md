@@ -337,7 +337,8 @@
      writes the cache gives both the new secrets, and the 5 s limit keeps forged `v2` headers from
      loading the database. When the 5 s limit blocks the fresh read and nothing verifies, the provider
      throws (the Redis event bus retries in 5 s, with a fresh read) instead of refusing; the reconcile
-     subscriber does the same.
+     subscriber does the same. An account-webhook envelope never takes the fresh read and never throws: its `v2`
+     uses the webhook's `whsec_` secret, which no fresh read can bring.
   3. `v1` with the env key, when one is set: `verifySignature(body, signature)` on a `Monei` built with
      the env key, never on the connected client (its key is `mk_`).
   4. Else refused (`NOT_SUPPORTED`, no fetch). For a payment body on a backend whose key in effect is
@@ -529,7 +530,7 @@ default.
       `NOT_SUPPORTED`, no fetch, an error line naming the id; the same with a body id holding a newline ⇒
       the id is not logged; a header with `v1` (env key) and an unknown `v2` ⇒ fetched; `v1` without an
       env key ⇒ refused; an unknown `v2` inside the 5 s window ⇒ a throw (retry), not a refusal; an
-      unverified event envelope ⇒ a warning, not an error; a backend with no key at
+      unverified event envelope ⇒ a warning, no fresh read, no throw; a backend with no key at
       all ⇒ `NOT_SUPPORTED`, not a throw
 - [ ] write `livemode` tests, each for a payment body and for an event envelope: `false` on Live ⇒
       refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒ refused
