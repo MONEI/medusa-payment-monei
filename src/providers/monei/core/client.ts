@@ -23,6 +23,24 @@ export function validateOptions(options: Partial<MoneiOptions> | undefined): Mon
   if (!options || !apiKey) {
     throw new Error("Required option `apiKey` is missing in the MONEI payment provider");
   }
+  const { accountId, signingSecret } = options;
+  if (apiKey.startsWith("mk_")) {
+    if (accountId !== undefined) {
+      throw new Error("Option `accountId` cannot be used with a scoped MONEI API key");
+    }
+    if (signingSecret === undefined) {
+      throw new Error("Option `signingSecret` is required with a scoped MONEI API key");
+    }
+    const secrets = Array.isArray(signingSecret) ? [...signingSecret] : [signingSecret];
+    if (
+      secrets.length === 0 ||
+      secrets.some((secret) => typeof secret !== "string" || !secret.startsWith("mksec_"))
+    ) {
+      throw new Error("Option `signingSecret` must contain one or more `mksec_` secrets");
+    }
+  } else if (signingSecret !== undefined) {
+    throw new Error("Option `signingSecret` requires a scoped MONEI API key");
+  }
   // MEDUSA_BACKEND_URL is the variable Medusa's docs use for the backend URL (the
   // default of `admin.backendUrl`); the server does not know its public URL itself.
   const backendUrl = options.backendUrl || process.env.MEDUSA_BACKEND_URL?.trim();

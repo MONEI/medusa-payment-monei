@@ -13,6 +13,7 @@ import {
   getUserAgent,
   validateOptions,
 } from "../src/providers/monei/core/client";
+import { API_KEY, SCOPED_API_KEY, SIGNING_SECRET } from "./helpers";
 
 // Literal copy of the pattern MONEI uses to parse a plugin User-Agent
 // (`MONEI/<source>/<x.y.z> (<comment>)`).
@@ -106,6 +107,39 @@ describe("validateOptions", () => {
     expect(
       validateOptions({ apiKey: "pk_test_x", backendUrl: "https://shop.test/medusa/" }).backendUrl,
     ).toBe("https://shop.test/medusa");
+  });
+});
+
+describe("validateOptions scoped API keys", () => {
+  const scoped = { apiKey: SCOPED_API_KEY, backendUrl: "https://shop.test" };
+
+  it("refuses to start with a scoped key whose callbacks cannot be verified", () => {
+    expect(() => validateOptions(scoped)).toThrowError(
+      /^Option `signingSecret` is required with a scoped MONEI API key$/,
+    );
+  });
+
+  it.each([
+    ["a secret with the wrong prefix", "whsec_test_x"],
+    ["an empty secret", ""],
+    ["an empty rotation list", []],
+    ["a rotation list with an invalid old secret", [SIGNING_SECRET, "whsec_test_old"]],
+  ])("refuses %s without leaking credentials", (_, signingSecret) => {
+    expect(() => validateOptions({ ...scoped, signingSecret })).toThrowError(
+      /^Option `signingSecret` must contain one or more `mksec_` secrets$/,
+    );
+  });
+
+  it("refuses a signing secret for a legacy key without leaking credentials", () => {
+    expect(() =>
+      validateOptions({ ...scoped, apiKey: API_KEY, signingSecret: SIGNING_SECRET }),
+    ).toThrowError(/^Option `signingSecret` requires a scoped MONEI API key$/);
+  });
+
+  it("refuses to use a scoped key to act for another account", () => {
+    expect(() =>
+      validateOptions({ ...scoped, signingSecret: SIGNING_SECRET, accountId: "acc_1" }),
+    ).toThrowError(/^Option `accountId` cannot be used with a scoped MONEI API key$/);
   });
 });
 

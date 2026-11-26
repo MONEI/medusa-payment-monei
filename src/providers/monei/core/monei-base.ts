@@ -570,7 +570,7 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       return { action: PaymentActions.NOT_SUPPORTED };
     };
 
-    const verified = verifyWebhook(this.client_, payload);
+    const verified = verifyWebhook(this.client_, this.options_, payload);
     if ("refused" in verified) return notSupported(verified.refused);
     const id = verified.paymentId;
 

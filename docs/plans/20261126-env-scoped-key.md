@@ -94,19 +94,19 @@ Trello: https://trello.com/c/xaRD0Pxs
   `src/subscribers/monei-payment-reconcile.ts`, `tests/client.test.ts`, `tests/webhook.test.ts`,
   `tests/subscribers.test.ts`, `tests/helpers.ts` (a `signV2` helper computed independently of the SDK)
 
-- [ ] `signingSecret` option and the startup rules of the Solution Overview in `validateOptions`
-- [ ] `verifyWebhook` per the Solution Overview; the provider and the reconcile subscriber pass the
+- [x] `signingSecret` option and the startup rules of the Solution Overview in `validateOptions`
+- [x] `verifyWebhook` per the Solution Overview; the provider and the reconcile subscriber pass the
       options
-- [ ] write `validateOptions` tests: an `mk_` key without `signingSecret` ⇒ refused; a secret without
+- [x] write `validateOptions` tests: an `mk_` key without `signingSecret` ⇒ refused; a secret without
       the `mksec_` prefix, an empty string or an empty array ⇒ refused; `signingSecret` with a `pk_` key
       ⇒ refused; `accountId` with an `mk_` key ⇒ refused; no error message holds the key or secret
       value; a `pk_` setup without `signingSecret` ⇒ accepted as today
-- [ ] write verify tests: an `mk_` backend and a `v2` signed with the configured secret ⇒ fetched; a
+- [x] write verify tests: an `mk_` backend and a `v2` signed with the configured secret ⇒ fetched; a
       `v2` signed with the second listed secret ⇒ fetched (rotation); a `v2` with an unknown secret ⇒
       refused, no fetch; a `v1`-only callback on an `mk_` backend ⇒ refused, no fetch; a `pk_` backend
       keeps verifying `v1` (the existing rows stay green); the reconcile subscriber refuses what the
       provider refuses
-- [ ] run `pnpm test` and `pnpm exec vp check` — must pass before next task
+- [x] run `pnpm test` and `pnpm exec vp check` — must pass before next task
 
 ### Task 2: Verify acceptance criteria
 

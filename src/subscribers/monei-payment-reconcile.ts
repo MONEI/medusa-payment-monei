@@ -12,6 +12,7 @@ import {
   PaymentWebhookEvents,
 } from "@medusajs/framework/utils";
 import { type Monei, type Payment, PaymentStatus } from "@monei-js/node-sdk";
+import { getMoneiOptions } from "../providers/monei/core/client";
 import { callMonei, isNotFound, toMedusaError } from "../providers/monei/core/errors";
 import { isMoneiProvider, sessionIdOf } from "../providers/monei/core/ids";
 import {
@@ -115,7 +116,7 @@ export default async function moneiPaymentReconcile({
   const logger = container.resolve<Logger>(ContainerRegistrationKeys.LOGGER);
   const client = moneiClient(container);
   // The core subscriber may already have rebuilt `rawData` on this shared event object.
-  const verified = verifyWebhook(client, event.data.payload ?? {});
+  const verified = verifyWebhook(client, getMoneiOptions(container), event.data.payload ?? {});
   if ("refused" in verified) {
     logger.warn(`MONEI reconcile ignored a callback: ${verified.refused}`);
     return;
