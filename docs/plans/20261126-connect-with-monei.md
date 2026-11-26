@@ -18,45 +18,36 @@
 
 ## Decisions (2026-11-26)
 
-Each item says who decided it.
+Each item says who decided it. The user confirmed every planner pick on 2026-11-26.
 
 - **Scope (user):** one credential set per Medusa backend, shared by every store and sales channel.
   Medusa configures payment providers per backend. A MONEI account per store is out of scope.
-- **Storage (planner; the user asked "what is the standard?"):** Medusa's standard is env provider
-  options, and it has no standard for a key written at runtime. A connect must write the key, so a
-  plugin module stores the credentials, the signing secrets and the pending `state` rows in the Medusa
-  database (plaintext, as the PHP plugins do). Admin API routes start, report and disconnect; an Admin
-  Settings page sits on top of them. Modules are isolated, so a provider cannot resolve a plugin
-  module's service; the documented bridge is the knex connection (`__pg_connection__`) that Medusa
-  registers in every module container. The provider reads through it with a short cache; all writes go
-  through the module service. Pending user confirmation.
-- **Mode rule (planner):** the user saw "connected Live, then env Live, then connected Test, then env
-  Test". Review showed that order moves a staging backend with an env `pk_test_` key to Live when a
-  connect returns Live. The plan now lets the env key set the mode (Solution Overview). Consequence: with
-  an env `pk_test_` key, a connected Live key stays unused until the merchant removes the env key and
-  restarts. Pending user confirmation, together with Open question 1.
-- **Callbacks (user: "v2, then v1, else drop"; planner caveat):** the planner's recommendation said the
-  storefront still completes a dropped callback's cart. That is false for Multibanco, MB WAY and a
-  closed tab. Open question 2.
-- **Live account check with an env Live key (user picked "read from a payment"; planner replaced it):**
-  the option rested on the planner's claim that no REST route returns a key's account. That was wrong:
-  `GET /allowed-payment-methods` answers `accountId` and `livemode` (Node SDK `PaymentMethods`). The
-  plan reads the account there with the env key. Pending user confirmation.
-- **Connect helpers (planner, not asked):** in the Node SDK (`monei-node-sdk`), as a `Connect` export
+- **Storage (planner, confirmed):** Medusa's standard is env provider options, and it has no standard
+  for a key written at runtime. A connect must write the key, so a plugin module stores the
+  credentials, the stored mode and the pending `state` rows in the Medusa database (plaintext, as the
+  PHP plugins do). Admin API routes start, report, switch the mode and disconnect; an Admin Settings
+  page sits on top of them. Modules are isolated, so a provider cannot resolve a plugin module's
+  service; the documented bridge is the knex connection (`__pg_connection__`) that Medusa registers in
+  every module container. The provider reads through it with a short cache; all writes go through the
+  module service.
+- **Mode rule (planner, confirmed; user picked "store the mode"):** with an env key, the env key sets
+  the mode, and the connected key of that mode wins over it. With an env `pk_test_` key, a connected
+  Live key stays unused until the merchant removes the env key and restarts. Without an env key, a
+  stored mode decides; a connect never changes it, and the admin switches it (PHP parity: the PHP
+  plugins never turn test mode off by themselves).
+- **Callbacks (user: fetch fallback):** a callback verifies by `v2` (current secret) or `v1` (env key).
+  One that does not verify is not dropped: after a format check, a session check and a quota, the
+  plugin fetches the payment with its own key, as the PHP plugins do. The body was already only a
+  pointer. The planner's first recommendation ("drop; the storefront completes the cart") was wrong
+  for Multibanco, MB WAY and a closed tab.
+- **Live account check with an env Live key (planner, confirmed):** the user first picked "read from a
+  payment"; that option rested on the planner's wrong claim that no REST route returns a key's account.
+  `GET /allowed-payment-methods` answers `accountId` and `livemode`, so the plan reads it there.
+- **Connect helpers (planner, confirmed):** in the Node SDK (`monei-node-sdk`), as a `Connect` export
   that mirrors PHP SDK `Monei\Connect`. The Node SDK already owns `verifySignature` with `v2`.
-- **`customers:read` for `medusa` (planner, not asked):** saved cards and reconcile call
-  `GET /v1/customers/{id}` and its payment methods. A common test pins "a leaked integration key cannot
-  read customers" on purpose. Open question 3.
-
-## Open questions (block execution of the affected tasks)
-
-1. Without an env key, a backend on a connected Test key moves to Live when a later connect returns Live.
-   Keep this, or store the mode in effect (a setting the page shows)?
-2. A callback with no verifiable signature on a backend without an env key (MONEI omits `v2` when its own
-   secret read fails): drop it with an error log, or fetch the payment as the PHP plugins do (format
-   check, the session must exist, quota)?
-3. Widen the `medusa` key with `customers:read`, or turn saved cards and the deleted-customer check off
-   on connected keys?
+- **`customers:read` for `medusa` (user):** saved cards and reconcile call `GET /v1/customers/{id}` and
+  its payment methods. The `medusa` key gets `customers:read` through per-client scopes; the PHP
+  clients keep the rule "a leaked integration key cannot read customers".
 
 ## Context (from discovery)
 
@@ -142,12 +133,12 @@ Each item says who decided it.
   - a `state` stored by a request that is not an authenticated admin, or by a cross-site request;
   - a forged disconnect clearing the credentials;
   - working credentials replaced by a failed, refused or unproven connect;
-  - a connect or a disconnect that changes the mode of a backend that has an env key (test to live, or
-    live to test);
+  - a connect or a disconnect that changes the mode of a backend (test to live, or live to test);
   - a Live connect of another MONEI account accepted;
   - a full `mk_` key or `mksec_` secret in an API answer, a page or a log line;
   - a signed callback of the other mode settling a session;
-  - a real callback dropped after a reconnect;
+  - a real callback dropped (after a reconnect, a revoked key, or MONEI omitting `v2`);
+  - an unsigned request re-running a finished session, or fetching past the quota;
   - a connected key sending `MONEI-Account-ID`;
   - a Connect button on a backend whose callback URL the broker refuses for a reason the plugin can
     check;
@@ -183,13 +174,13 @@ Each item says who decided it.
     stays; a seeded row 20 min 1 s old ⇒ `expired`, and the row is gone; one fresh row called back twice
     ⇒ the second call gets `unknownState`; 10 parallel callbacks of one row ⇒ exactly one
     `temporarily_unavailable` page (the dead broker), nine `unknownState`;
-  - an authenticated disconnect on psql-seeded credential, secret and `state` rows ⇒ the credentials
-    and `state` rows are gone, the secrets stay;
+  - an authenticated disconnect on psql-seeded credential, mode and `state` rows ⇒ all gone;
+  - `PUT …/mode` with an env key set ⇒ refused;
   - the switch on real Postgres, through a test-only `medusa exec` script in the backend container
     (`e2e/backend/src/scripts/monei-switch.ts`) that calls the module's `switchCredentials`; every row
     deletes the `monei_*` rows in `finally`:
-    - Test twice with different secrets ⇒ one Test row with the second key, both secrets stored;
-    - Test again with a secret already stored ⇒ no unique error, the credential row replaced;
+    - Test twice with different keys ⇒ one Test row with the second key; the stored mode is `test`;
+    - then Live ⇒ a Live row, and the stored mode stays `test`;
     - Live with `liveBasis` = a connected row id while no Live row exists (a Disconnect in between) ⇒
       `temporarily_unavailable`, no row written;
     - a stored Live row of account A, then Live of B plus Test ⇒ `otherAccount`, the Live row
@@ -200,12 +191,12 @@ Each item says who decided it.
       the script answers `otherAccount` and one Live row of A stays (without the lock the script does
       not see A and fails on the unique index);
   - in its own file `e2e/specs/connect-key.spec.ts`: a backend restarted without `MONEI_API_KEY` and
-    with a seeded connected Test row (the real `pk_test_` key) ⇒ a hosted-page payment completes
-    through the return page, and the backend log has
-    the "unverified callback" error for its payment (no `v2` can match a seeded secret, and there is no
-    env key for `v1`). A second row in that file: pay without following the return page, then post the
-    payment's body to `/hooks/payment/monei_monei` with a `v2` the spec signs with the seeded secret ⇒
-    the order is created (the real webhook pipeline accepts a stored secret);
+    with a seeded connected Test row (the real `pk_test_` key) and stored mode `test` ⇒ a hosted-page
+    payment whose return page is not followed still creates the order, and the backend log has the
+    fallback line for its payment (no real `v2` can match a seeded secret, and there is no env key for
+    `v1`). Also in that file: `PUT …/mode` `{mode: "live"}` with only a Test row ⇒ refused. A second row: post that payment's body to `/hooks/payment/monei_monei` with a `v2` the spec
+    signs with the seeded secret ⇒ the order is created with no fallback log line (the real webhook
+    pipeline accepts the stored secret);
   - the existing env-key payment specs pass unchanged.
   - Not in e2e: an upgrade without `db:migrate` (the e2e backend runs `medusa db:migrate` on every
     start); the `42P01` unit row covers it.
@@ -235,10 +226,8 @@ Each item says who decided it.
 - **Storage** (plugin module `monei_connect`):
   - `monei_credential`: one row per mode, unique on `mode` (`live`, `test`): `account_id`, `api_key`,
     `signing_secret`. Hard delete only.
-  - `monei_signing_secret`: every secret the backend has received, `(mode, secret)` unique. Appended on
-    each proven switch. Disconnect keeps it, so callbacks of in-flight payments still verify after a
-    Disconnect and a new connect. Keeping old secrets is low risk: a verified body is only a pointer,
-    and the payment is fetched with the key in effect.
+  - `monei_setting`: one row (`id` constant): `mode` (`live` | `test`), the stored mode used when no env
+    key is set.
   - `monei_connect_state`: `state` (unique), `verifier`, `redirect_uri`, `created_at`.
   - Every time rule uses the database clock (`now()`), never the app clock. DML sets `created_at` from
     the app clock (`onCreate`), so `state` rows are written by a custom method.
@@ -255,20 +244,22 @@ Each item says who decided it.
       `temporarily_unavailable` when that row is not the one `completeConnect` based its Live decision
       on (`liveBasis`: the connected row's id, or "none, env checked"; a Disconnect or another connect in
       between), runs the stored-Live account check, then per
-      proven mode deletes the old row and creates the new one with the generated methods, and creates
-      the secret row unless it exists. Two concurrent connects therefore run one after the other.
-    - `disconnect()`: deletes both credential rows and every `state` row; keeps the secrets.
-- **Mode and key in effect** (the PHP rule "a connect never changes the mode", without a mode setting):
+      proven mode deletes the old row and creates the new one with the generated methods, and sets the
+      stored mode when none is set (Live if Live was proven, else Test). It never changes a stored mode.
+      Two concurrent connects therefore run one after the other.
+    - `setMode(mode)`: sets the stored mode; refuses a mode without a credential row.
+    - `disconnect()`: deletes both credential rows, the stored mode and every `state` row.
+- **Mode and key in effect** (the PHP rule "a connect never changes the mode"):
   - The env key's mode: `_test_` right after the key type (`pk_test_`, `mk_test_`) is test; any other
     key is live (an unknown prefix is never shadowed by a connected Test key).
   - With an env key, the mode in effect is the env key's mode. The connected row of that mode wins over
     the env key. A connected row of the other mode is stored and shown, but not used. To go live, the
     merchant removes the env `pk_test_` key and restarts.
-  - Without an env key: connected Live, else connected Test, else none.
-  - So with an env key, a connect never moves the backend between modes, and Disconnect falls back to
-    the env key of the same mode. ⚠️ Without an env key, a backend on a connected Test key moves to Live
-    when a later connect returns Live (after the account's approval). Open question 1 (the PHP plugins
-    have a mode setting).
+  - Without an env key: the stored mode's connected row, else none. The first proven connect sets the
+    stored mode; later connects never change it, so a backend on Test stays on Test after the account's
+    approval until an admin switches it.
+  - So a connect never moves a backend between modes, and Disconnect falls back to the env key of the
+    same mode (or to none).
   - `apiKey` becomes optional in `validateOptions`. With no key in effect, every MONEI call throws
     "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY". The boot does not
     fail (the merchant needs a running backend to connect), and the Apple Pay job logs a warning and
@@ -276,12 +267,9 @@ Each item says who decided it.
   - With the partner `accountId` option set, Connect is refused (`partner`) and connected rows are
     ignored: a scoped key cannot act for another account. A connected key never sends
     `MONEI-Account-ID`.
-  - One reader, `loadCredentials(knex, options, {fresh?})`, used by the provider (cradle
-    `__pg_connection__`) and by routes, subscribers and the job (container `__pg_connection__`). It
-    returns the key in effect and both stored rows (for status). It caches the result per process for
-    30 s. `fresh` reads past the cache, single-flight (concurrent callers share one query), and writes
-    the result into the cache, so every caller after it sees the new rows. No rate window: the query
-    reads at most a few indexed rows, and single-flight bounds it to one query in flight per process.
+  - One reader, `loadCredentials(knex, options)`, used by the provider (cradle `__pg_connection__`) and
+    by routes, subscribers and the job (container `__pg_connection__`). It returns the key in effect,
+    both stored rows and the stored mode (for status). It caches the result per process for 30 s.
   - The cache has a generation counter. `clearCredentialsCache()` bumps it, and a read publishes its
     result only when the generation did not change while it ran, so a read that started before a
     switch or Disconnect cannot put the old credentials back.
@@ -291,7 +279,8 @@ Each item says who decided it.
     no rows, with one warning per process. The env key keeps working. Any other database error throws
     and is never cached.
   - The instance that writes clears its cache at once. Another instance or the worker may use the old
-    key for up to 30 s. That is safe for calls: nothing revokes the old key. For callbacks see below.
+    key for up to 30 s. That is safe for calls (nothing revokes the old key) and for callbacks (one that
+    does not verify with the cached secret takes the fetch fallback).
   - The client is resolved per call (`await moneiClient(scope)`, `await this.client()`), cached per key.
 - **Start** `POST /admin/monei/connect` (authenticated admin):
   - Refuses before any read or write when the request is not `application/json` (`req.is()`, the
@@ -304,9 +293,13 @@ Each item says who decided it.
   - `deleteOldStates()`, runs `Connect.start('medusa', redirectUri, base)`, `createState`, and
     answers `{url}`. The verifier stays in the row.
 - **Status** `GET /admin/monei/connect`: per mode `{source: "connected" | "env" | null, accountId,
-  last4}` (`accountId` only for a connected row), the mode in effect, and `startProblem` (`partner`,
+  last4}` (`accountId` only for a connected row), the mode in effect, the stored mode, and
+  `startProblem` (`partner`,
   `redirectUri` when `canonicalRedirectUri` throws, a `callbackProblem` code, or null). Never a full key
   or secret.
+- **Mode** `PUT /admin/monei/connect/mode` `{mode}` (authenticated admin): an HTML form cannot send PUT
+  and a cross-origin PUT needs a preflight. Refused while an env key is set (the env key sets the
+  mode) and for a mode without a connected row. Runs `setMode`, clears the cache.
 - **Disconnect** `DELETE /admin/monei/connect` (authenticated admin): an HTML form cannot send DELETE,
   and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It runs
   `disconnect()`, clears the cache, and answers the dashboard API keys URL. Without an env key of the
@@ -315,10 +308,9 @@ Each item says who decided it.
   those words. The keys stay active until
   the merchant revokes them there. An env key is never touched.
 - **Revoking and removing old keys:** MONEI deletes a revoked key, and the callbacks of the payments it
-  made then carry only `v1` (the account `pk_` key). Payments made with an env `pk_` key never carry
-  `v2`. So the Disconnect answer, the `cap` text and the README say: revoke an old key, or remove
-  `MONEI_API_KEY`, only after the open payments it made have settled (Multibanco and MB WAY can stay
-  open for days).
+  made then carry only `v1`. Those callbacks take the fetch fallback, so they still settle, but the
+  fetch needs a key of the same account. The README says: after a connect of another account, keep the
+  old key until its open payments settle.
 - **Callback** `GET /monei/connect?code&state` (public):
   - `consumeState`: unknown, missing, used or expired ⇒ error page, no exchange.
   - With an `error` from the broker, or without `code` ⇒ error page. Nothing changes.
@@ -362,46 +354,43 @@ Each item says who decided it.
     domains with the new key in effect (the job's loop, extracted), after the response, so a slow
     Apple Pay call never times the page out. An Apple Pay error keeps the switch.
 - **Callback verify** (`verifyWebhook(credentials, payload)`, used by the provider and the reconcile
-  subscriber):
-  1. `v2` with each stored secret of the mode in effect (current first). The SDK's
-     `verifySignature(body, signature, secret)`.
-  2. If the header has a `v2` and no stored secret verifies it: `loadCredentials(…, {fresh: true})`
-     and try once more (a worker whose cache predates a connect or reconnect). The provider and the
-     reconcile subscriber verify the same callback at the same time; the single-flight read that
-     writes the cache gives both the new secrets. No throw: the Redis bus retries with no backoff, so a
-     retry would not wait for anything. An account-webhook envelope never takes the fresh read: its
-     `v2` uses the webhook's `whsec_` secret, which no fresh read can bring.
-  3. `v1` with the env key, when one is set: `verifySignature(body, signature)` on a `Monei` built with
+  subscriber). It returns the payment id to fetch and whether the body was verified:
+  1. `v2` with the current `signing_secret` of the mode in effect (the SDK's
+     `verifySignature(body, signature, secret)`), when the key in effect is connected.
+  2. `v1` with the env key, when one is set: `verifySignature(body, signature)` on a `Monei` built with
      the env key, never on the connected client (its key is `mk_`).
-  4. Else refused (`NOT_SUPPORTED`, no fetch). For a payment body on a backend whose key in effect is
-     connected, the log line is an error naming the body's payment id as unverified, so the merchant can
-     check it in the dashboard; the id is logged only when it has the MONEI id format (no log
-     injection). An account-webhook envelope is logged as a warning: it is signed with the webhook's own
-     `whsec_` secret, which the plugin does not store, so a connected-only backend cannot verify it
-     (README).
-  - After a signature passes, the body's `livemode` (Payment body, or the event's `object`) must be a
-    boolean equal to the mode in effect; absent or not a boolean ⇒ refused. Exception: with the partner
-    `accountId` option, the key's prefix does not give the merchant's mode (a `pk_test_` master key can
-    act for a live merchant), so there is no `livemode` check, as today. Without this, a signed Test
-    callback would be fetched with the Live key, or the other way.
-  - Then, as today: fetch the payment with the key in effect and use the body only as a pointer.
-  - PHP deviation: no fetch of unverified callbacks and no quota. Medusa answers 200 before the provider
-    runs, so a 503 retry is not possible, and the local event bus does not retry at all. The stored
-    secrets, the cache bypass and the env `v1` key cover the routine cases (reconnect, worker cache,
-    payments made before the first connect).
-  - ⚠️ MONEI sends a callback without `v2` when its own signing-secret read fails or finds no secret
-    (common `ApiKeyModel.ts` `callbackV2Secrets`, `signing.v2Unavailable`), while the key is active. On
-    a backend without an env key such a callback is dropped, and an asynchronous payment (Multibanco,
-    MB WAY, a closed tab) stays open in Medusa while MONEI shows it paid. Open question 2.
+  3. A verified body's `livemode` must be a boolean equal to the mode in effect; absent or not a
+     boolean ⇒ refused. Exception: with the partner `accountId` option, the key's prefix does not give
+     the merchant's mode (a `pk_test_` master key can act for a live merchant), so there is no `livemode`
+     check, as today.
+  4. Fetch fallback (PHP behaviour) for a payment body that did not verify. An account-webhook envelope
+     that did not verify is refused with a warning (it is signed with the webhook's own `whsec_`
+     secret, which the plugin does not store). Before any fetch, in this order:
+     - the payment id has the MONEI id format, and the body's `orderId` is a Medusa session id
+       (`payses_…`); else refused, no fetch;
+     - that session exists and is not authorized yet (`authorized_at` empty): the fallback only
+       completes open sessions, so an unsigned replay cannot re-run a finished one; else refused;
+     - quota, per process: at most 5 fallback fetches a minute per session and 60 a minute in all;
+       spent ⇒ refused with an error log (Medusa has no retry to wait for).
+  5. Fetch the payment with the key in effect, once. For the fallback path: the fetched `id` and
+     `orderId` must equal the body's, and the fetched `livemode` must equal the mode in effect; else
+     refused. Then, as today, the fetched payment decides the action.
+  - Refusals return `NOT_SUPPORTED` with one log line. The payment id is logged only when it has the
+    MONEI id format (no log injection).
+  - The reconcile subscriber applies the same rules (it must not report or act on what the provider
+    refuses). So orphan payments (session gone or replaced) are reported only from verified
+    callbacks.
+  - Deviations from PHP: Medusa answers 200 before the provider runs, so a refusal is never retried by
+    MONEI; no forward-move table (the "session not authorized" rule covers the replay case, and core
+    owns the order state after authorization).
   - Known gap: a reconnect that replaces a connected Test row of account A with Test account B (Test
-    accounts are not checked) strands A's open test payments the same way: their `v2` verifies with
-    A's kept secret, then the fetch with B's key gets a 404.
+    accounts are not checked) strands A's open test payments: the fetch with B's key gets a 404.
   - Known gap, kept as in PHP: env `pk_test_` of account A plus a connected Test key of account B (Test
-    accounts are not checked). A payment made with A before the connect verifies by `v1`, then its fetch
-    with B's key gets a 404.
+    accounts are not checked). A payment made with A before the connect fetches with B's key: 404.
 - **Admin page** `src/admin/routes/settings/monei/page.tsx` (`defineRouteConfig`, Settings sidebar):
   status per mode (source, account, "•••• last4", which mode is in effect), Connect, Disconnect
-  (confirm), and "Use manual keys (MONEI_API_KEY)" instead of the button when the start problem is set.
+  (confirm), a "Use Live" / "Use Test" switch when no env key is set and both modes are connected, and
+  "Use manual keys (MONEI_API_KEY)" instead of the button when the start problem is set.
   Connect opens a blank tab in the click handler (no popup blocker), POSTs the start with JSON, then sets
   the tab's location to `url`. The page has no key fields: manual keys stay in env, so the PHP stale-tab
   fingerprint is not needed.
@@ -507,7 +496,7 @@ default.
 **Files:**
 
 - Create: `src/modules/monei-connect/index.ts`, `service.ts`, `models/credential.ts`,
-  `models/signing-secret.ts`, `models/connect-state.ts`, `migrations/*`,
+  `models/setting.ts`, `models/connect-state.ts`, `migrations/*`,
   `src/providers/monei/core/credentials.ts`, `tests/credentials.test.ts`
 - Modify: `package.json` (`exports["./.medusa/server/src/modules/*"]`, `@monei-js/node-sdk` `^3.6.0`),
   `e2e/backend/package.json` and its lock (the SDK pin), `src/providers/monei/core/client.ts`,
@@ -516,15 +505,15 @@ default.
   mock `createMoneiClient`
 
 - [ ] module `monei_connect` with the three models, the unique indexes, and the custom service methods
-      `createState`, `consumeState`, `deleteOldStates`, `switchCredentials`, `disconnect` (Solution
-      Overview, Storage)
+      `createState`, `consumeState`, `deleteOldStates`, `switchCredentials`, `setMode`, `disconnect`
+      (Solution Overview, Storage)
 - [ ] migrations with `medusa plugin:db:generate` against a local Postgres (`DATABASE_URL`; the e2e
       compose Postgres maps no host port, so start a throwaway `postgres` container for it)
 - [ ] the `exports` entry so a host app resolves the module; check on the peer floor 2.17.0
       (`e2e/README.md` "Another Medusa version"): the module merges and migrates and the provider
       container has `__pg_connection__`, or raise the peer floor (changelog note)
-- [ ] `loadCredentials(knex, options, {fresh?})` ⇒ `{mode, apiKey, accountId?, secrets, source,
-      envKey?}` with the mode rules of the Solution Overview; 30 s per-process cache;
+- [ ] `loadCredentials(knex, options)` ⇒ `{mode, apiKey, accountId?, signingSecret?, source, envKey?,
+      rows, storedMode}` with the mode rules of the Solution Overview; 30 s per-process cache;
       `clearCredentialsCache()`; `42P01` counts as no rows with one warning; other errors throw uncached
 - [ ] `apiKey` optional in `validateOptions`; a call without any key throws the "not connected" error;
       the `accountId` option ignores connected rows; a connected key never sends `MONEI-Account-ID`
@@ -535,12 +524,12 @@ default.
       ⇒ the connected Test key (a connect moves no backend with an env key to live); env `pk_test_` +
       connected Live only ⇒ the env key; env `pk_live_` + connected Live ⇒ the connected key (the main
       migration case); env `pk_live_` + connected Test only ⇒ the env key; env `pk_abc…` + connected Test
-      ⇒ the env key (unknown prefix is live); env `mk_test_…` ⇒ test; no env key + both rows ⇒ connected
-      Live (pending Open question 1: if the user picks a stored mode, this row changes); nothing ⇒ the "not connected" error on a call while the provider
+      ⇒ the env key (unknown prefix is live); env `mk_test_…` ⇒ test; no env key + both rows + stored
+      mode `test` ⇒ the connected Test key (approval plus a reconnect does not go live); no env key +
+      both rows + stored mode `live` ⇒ the connected Live key; nothing ⇒ the "not connected" error on a call while the provider
       constructs
 - [ ] write tests for the reader: a cleared cache sees a new row; an uncleared one does not at 29 s and
-      does at 30 s + 1 ms (fake timers); `fresh` sees a new row and the next non-fresh call returns it;
-      two parallel `fresh` calls run one query; a read still running when `clearCredentialsCache()` runs
+      does at 30 s + 1 ms (fake timers); a read still running when `clearCredentialsCache()` runs
       does not publish its result (a deferred fake query); an error
       with `code: "42P01"` (the pg error shape) ⇒ the env key, one warning for two calls; another error
       ⇒ thrown, and the next call queries again; a connected key with the `accountId` option set ⇒ the
@@ -555,30 +544,34 @@ default.
 - [ ] adapt the existing tests to the async client; no behaviour change in them
 - [ ] run tests — must pass before next task
 
-### Task 4: Callback verification with the stored secrets
+### Task 4: Callback verification and the fetch fallback
 
 **Files:**
 
-- Modify: `src/providers/monei/core/webhook.ts`, `credentials.ts` (the single-flight fresh read),
-  `monei-base.ts` (`getWebhookActionAndData`), `src/subscribers/monei-payment-reconcile.ts`,
-  `tests/webhook.test.ts`, `tests/subscribers.test.ts`, `tests/helpers.ts` (a `signV2` helper computed
-  independently of the SDK; `livemode` in the callback fixtures)
+- Modify: `src/providers/monei/core/webhook.ts`, `monei-base.ts` (`getWebhookActionAndData`),
+  `src/subscribers/monei-payment-reconcile.ts`, `tests/webhook.test.ts`, `tests/subscribers.test.ts`,
+  `tests/helpers.ts` (a `signV2` helper computed independently of the SDK; `livemode` in the callback
+  fixtures)
 
-- [ ] `verifyWebhook(credentials, payload)` per the Solution Overview: stored secrets, one single-flight
-      fresh read, `v1` with an env-key `Monei`, else refused with the log rules; then the `livemode`
-      check
+- [ ] `verifyWebhook(credentials, payload)` per the Solution Overview: `v2`, `v1` with an env-key
+      `Monei`, the `livemode` check, then the fetch fallback with its pre-checks, quota and post-fetch
+      checks
 - [ ] the provider and the reconcile subscriber call it with the resolved credentials
-- [ ] write tests: `v2` with the current secret ⇒ fetched; `v2` with a secret two reconnects old ⇒
-      fetched; `v2` with a secret stored after the reader's cache was filled ⇒ fetched (the fresh read);
-      the provider and the reconcile subscriber verifying that callback in parallel ⇒ both fetch (one
-      shared fresh read); `v2` with an unknown secret and no env key ⇒
-      `NOT_SUPPORTED`, no fetch, an error line naming the id; the same with a body id holding a newline ⇒
-      the id is not logged; a header with `v1` (env key) and an unknown `v2` ⇒ fetched; `v1` without an
-      env key ⇒ refused; an unverified event envelope ⇒ a warning, no fresh read; with the partner
-      `accountId` option, a `v1` body with `livemode: true` on a `pk_test_` key ⇒ fetched; a backend with no key at
-      all ⇒ `NOT_SUPPORTED`, not a throw
-- [ ] write `livemode` tests, each for a payment body and for an event envelope: `false` on Live ⇒
-      refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒ refused
+- [ ] write verify tests: `v2` with the current secret ⇒ fetched, no quota used; a header with `v1`
+      (env key) and an unknown `v2` ⇒ fetched as verified; with the partner `accountId` option, a `v1`
+      body with `livemode: true` on a `pk_test_` key ⇒ fetched; an unverified event envelope ⇒ a
+      warning, no fetch
+- [ ] write `livemode` tests for verified bodies, each for a payment body and for an event envelope:
+      `false` on Live ⇒ refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒
+      refused
+- [ ] write fallback tests (each names its bug): an unverified body of an open session ⇒ fetched and
+      the action returned (the revoked-key and missing-`v2` callbacks settle); a malformed payment id, or
+      an `orderId` that is not `payses_…` ⇒ refused, no fetch; an unknown session ⇒ refused, no fetch; an
+      authorized session ⇒ refused, no fetch (no replay of a finished session); a 6th fallback for one
+      session within a minute, or a 61st in all ⇒ refused, no fetch, an error line, and one more after
+      61 s ⇒ fetched (fake timers); a fetched payment whose `id` or `orderId` differs from the body's ⇒
+      refused; a fetched `livemode` other than the mode ⇒ refused; a body id holding a newline ⇒ the id
+      is not logged; a backend with no key at all ⇒ `NOT_SUPPORTED`, not a throw
 - [ ] the reconcile subscriber refuses what the provider refuses (one wiring row)
 - [ ] run tests — must pass before next task
 
@@ -611,7 +604,8 @@ that version, also in `e2e/backend/package.json` and its lock).
       to the new one ⇒ `keyRejected`, nothing stored); a Test result whose `getAllowed` answers
       `livemode: true` ⇒ `keyRejected`; a result whose `getAllowed` answers another `accountId` than the
       token's ⇒ `keyRejected`; an `mk_live_` key in the Test slot ⇒ `keyRejected` with no call; Test proven and Live 401 ⇒ only Test passed to
-      `switchCredentials`; only Test returned ⇒ the Live row unchanged
+      `switchCredentials`; only Test returned ⇒ the Live row unchanged; `switchCredentials` gets no mode change from
+      `completeConnect` (the stored mode is set only inside it, when none is set)
 - [ ] write account tests: env Live key whose `getAllowed` answers another `accountId` ⇒ `otherAccount`,
       nothing switched, Test included; env Live key answering 401 or 403 ⇒ `envKeyUnchecked`, 400 ⇒
       `envKeyNoProvider`, nothing switched; Test-only result with an env Live key
@@ -630,6 +624,7 @@ that version, also in `e2e/backend/package.json` and its lock).
 **Files:**
 
 - Create: `src/api/admin/monei/connect/route.ts` (GET status, POST start, DELETE disconnect),
+  `src/api/admin/monei/connect/mode/route.ts` (PUT),
   `src/api/monei/connect/route.ts` (GET callback), `tests/connect-routes.test.ts`
 - Modify: `src/api/middlewares.ts` (JSON-only on the start)
 
@@ -638,7 +633,8 @@ that version, also in `e2e/backend/package.json` and its lock).
 - [ ] write tests (wiring only; the JSON guard's bypass forms are e2e rows): status with a connected row
       answers `last4` and holds neither `api_key` nor any secret; status with only an env key holds no key
       value; status answers `startProblem` `partner` with the option set and the `callbackProblem` code
-      for an `http` `backendUrl`; disconnect calls `disconnect()` and clears the cache; the callback
+      for an `http` `backendUrl`; disconnect calls `disconnect()` and clears the cache; `PUT …/mode` with an env key set ⇒ refused and
+      no `setMode` call, without one ⇒ `setMode` and a cache clear; the callback
       without `code`, with a broker `error`, or with an unknown `state` ⇒ the error page with both
       headers and no exchange; `?error=<script>` ⇒ the page shows "unknown error" and no markup; a
       switch that throws an error whose message holds the new key ⇒ `temporarily_unavailable`, and no
@@ -656,7 +652,7 @@ that version, also in `e2e/backend/package.json` and its lock).
   (`peerDependenciesMeta`), so a host with Admin disabled installs nothing new), `tests/module.test.ts`
 
 - [ ] the page per the Solution Overview (blank tab in the click, POST `{}` with JSON, then the tab's
-      location)
+      location; the mode switch; the Disconnect confirmation text when no env key backs the mode)
 - [ ] `pnpm build` builds the admin extension; the e2e backend (Admin disabled) still installs and
       starts, also on the 2.17.0 floor
 - [ ] write a `tests/module.test.ts` row: `medusa-payment-monei/admin` resolves to the built admin entry
@@ -698,8 +694,8 @@ that version, also in `e2e/backend/package.json` and its lock).
 
 - [ ] README: "Connect with MONEI" first in Configuration (Admin page, and the admin API with a secret
       API key and a `{}` JSON body for a backend with Admin disabled); the mode rules; `medusa
-      db:migrate` on upgrade; the callback rules (account webhooks need the env key); when to revoke old
-      keys or remove `MONEI_API_KEY` (after their open payments settle); `MONEI_CONNECT_BASE_URL`; the
+      db:migrate` on upgrade; the callback rules (the fetch fallback and its quota; account webhooks need the env key);
+      the mode switch; keep an old key of another account until its open payments settle; `MONEI_CONNECT_BASE_URL`; the
       "Use manual keys" cases (http backend, more than 2 path segments, `monei` in the host, partner
       `accountId`); any admin user can connect (no RBAC policy); a new env key of another account does
       not replace a connected key of the same mode (Disconnect first); CHANGELOG through release-it
@@ -721,7 +717,7 @@ that version, also in `e2e/backend/package.json` and its lock).
   - the Admin page renders in Settings, Connect opens the broker in a new tab, and the page shows
     "•••• last4" on reload;
   - connect, pay, and check that the callback verifies by `v2`;
-  - reconnect during an open payment: its callback verifies with the older secret;
+  - reconnect during an open payment: its callback settles (verified or through the fallback);
   - an order made before the connect, with the env key still set, settles by `v1`;
   - the backend with only the env key works as before.
 - **Sylius:** link the Task 1 PRs in both plans. The Sylius plan gates on a PHP SDK release; cut it
