@@ -1,6 +1,7 @@
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type * as reconcileModule from "../src/subscribers/monei-payment-reconcile";
+import type { MoneiOptions } from "../src/providers/monei/types";
 import {
   API_KEY,
   emptyCredentialsStore,
@@ -103,7 +104,7 @@ let reconcile: typeof reconcileModule.default;
 let config: typeof reconcileModule.config;
 let readCredentials: ReturnType<typeof vi.fn>;
 let moneiClient: typeof import("../src/providers/monei/core/scope").moneiClient;
-let options: { apiKey?: string; backendUrl: string };
+let options: MoneiOptions;
 
 beforeEach(async () => {
   vi.resetModules();
@@ -184,6 +185,38 @@ describe("reconcile subscriber: orphan payments", () => {
     expect(logger.error.mock.calls[0][0]).toContain(MONEI_PAYMENT_ID);
     expect(logger.error.mock.calls[0][0]).toContain("refund it");
     expect(posts()).toBe(0);
+  });
+
+  it("reconciles a PayPal account webhook signed with its own secret and reports an unattached charge", async () => {
+    const paypalSecret = "whsec_" + "b".repeat(43);
+    options.accountWebhookSigningSecrets = {
+      pp_monei_monei: "whsec_" + "a".repeat(43),
+      "pp_monei-paypal_monei": paypalSecret,
+    };
+    const session = tables.payment_session.find(({ id }) => id === "payses_live")!;
+    session.provider_id = "pp_monei-paypal_monei";
+    session.payment = { data: { id: "another_payment" } };
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_live" }));
+    const raw = JSON.stringify({
+      type: "charge.captured",
+      livemode: false,
+      objectType: "charge",
+      objectId: MONEI_PAYMENT_ID,
+      object: { id: MONEI_PAYMENT_ID },
+    });
+
+    await run({
+      provider: "monei-paypal_monei",
+      rawData: raw,
+      headers: { "monei-signature": signV2(raw, paypalSecret) },
+    });
+
+    expect(mock.history.get).toHaveLength(1);
+    expect(emit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "monei.orphan_payment" }),
+    );
   });
 
   it("reports an authorized payment whose session now points to another payment", async () => {
@@ -307,7 +340,7 @@ describe("reconcile subscriber: verification", () => {
         id,
         provider_id: PROVIDER_ID,
         data: { id: MONEI_PAYMENT_ID },
-        payment: { [field]: new Date() },
+        payment: { data: { id: MONEI_PAYMENT_ID }, [field]: new Date() },
       });
 
       await run({ rawData: callbackBody({ orderId: id }), headers: {} });

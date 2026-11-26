@@ -163,9 +163,10 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
 
 - **unit tests**: every task (Vitest in the plugin and the Node SDK; each other repo's own runner).
   Cover replaced payments and provider mismatches before a fallback fetch and before a settlement
-  action, and confirm eligible callbacks wait for quota and re-check the session. Cover failures in
-  credential reads during best-effort cart deletion and hold release, as well as a capture that
-  retains the same key for all its API calls during a reconnect.
+  action, and confirm callbacks that exhaust the fallback quota return immediately and log the
+  payment ID at error level. Cover failures in credential reads during best-effort cart deletion
+  and hold release, as well as a capture that retains the same key for all its API calls during a
+  reconnect.
 - **e2e** (plugin Playwright suite, real backend through the tunnel, so `https`), `e2e/specs/connect.spec.ts`:
   - status, start and disconnect without admin auth ⇒ 401; no `state` row is added, and a seeded
     credential row stays (then removed);
@@ -200,8 +201,9 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
       `liveBasis`. The spec polls `pg_locks` until the script waits on the advisory lock. After psql
       commits, the script answers `temporarily_unavailable` because its basis is stale, and only Live
       of A remains;
-    - with Medusa `databaseLogging` enabled, verify the INSERT bindings and a rejected credential
-      write keep both credential values out of the logs and the error shown to the caller;
+    - with Medusa `databaseLogging` and Knex binding debugging enabled, verify successful and
+      rejected credential writes keep both credential values out of logs, Knex events and the
+      error shown to the caller;
   - in its own file `e2e/specs/connect-key.spec.ts`: a backend restarted without `MONEI_API_KEY` and
     with a seeded connected Test row (the real `pk_test_` key) and stored mode `test` ⇒ a hosted-page
     payment whose return page is not followed still creates the order, and the backend log has the
@@ -260,10 +262,10 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
       (the stored row ID, or null when the env key was checked and there was no stored row).
       A stale basis returns `temporarily_unavailable`. With a matching basis, a different stored
       Live account returns `otherAccount`. For each proven mode it deletes the old row and inserts
-      the new one using bound Knex parameters on the same transaction, with query debugging disabled
-      and sanitized write errors so database logging cannot expose the credential values. It sets the
-      stored mode when none is set: the env key's mode when an env key is set, else Live if Live was
-      proven, else Test. It never changes a stored mode.
+      the new one with bound parameters on the transaction's pinned PostgreSQL connection.
+      The write bypasses MikroORM and Knex query logging and events, and failures return a sanitized
+      error. It sets the stored mode when none is set: the env key's mode when an env key is set,
+      else Live if Live was proven, else Test. It never changes a stored mode.
       Two concurrent connects therefore run one after the other.
     - `setMode(mode)`: under the same advisory lock, re-reads the rows and sets the stored mode; refuses
       a mode without a credential row.
@@ -388,9 +390,12 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
   the reconcile subscriber). The context supplies the client, logger, provider ID, session lookup and
   optional account-webhook secret. It returns the fetched payment and whether the body was verified.
   1. Verify `v2` with the stored `signing_secret` when a connected key is active. An account-webhook
-     envelope can also verify by `v2` with the configured `accountWebhookSigningSecret` (`whsec_…`).
-     Dashboard captures use the account webhook because the capture operation does not queue the
-     original payment's callback.
+     envelope can also verify by `v2` with the entry for its Medusa provider ID in
+     `accountWebhookSigningSecrets`. For dashboard captures, create one `charge.captured` account
+     webhook per provider that needs them, with its own callback URL and signing secret. For card
+     and PayPal the keys are `pp_monei_monei` and `pp_monei-paypal_monei`, respectively. Each
+     configured secret must match the MONEI `whsec_` format at startup. The capture operation does
+     not queue the original payment's callback.
   2. Verify `v1` with the env key when it is set. Reuse the active client when the env key is active.
      With connected credentials, build the verifying client through `createMoneiClient` with the env
      key. Use the body decoded by the SDK when verification succeeds.
@@ -399,28 +404,32 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
      different modes.
   4. Parse the raw JSON for the unverified fallback. Refuse account-webhook envelopes. The payment
      id must be in MONEI format, and `orderId` must be a Medusa session id (`payses_…`). The session
-     must exist, belong to the provider and store that payment id in `data.id`. Its Medusa payment,
-     if present, must have neither a capture nor a cancellation.
-  5. Allow at most 5 fallback fetches per session and 60 per process in a rolling minute. An eligible
-     request waits when a limit is full. Deferred callbacks for the same payment and credentials share
-     the wait and re-check the session before spending a slot. Unverified orphan callbacks spend
-     no settlement quota.
+     must exist, belong to the provider and match the ID Medusa will act on (step 7). Its Medusa
+     payment, if present, must have neither a capture nor a cancellation.
+  5. Allow at most 5 fallback fetches per session and 60 per process in a rolling minute. Refuse a
+     fallback immediately when either quota is spent. Unverified orphan callbacks spend no
+     settlement quota.
   6. The subscribers share a fallback fetch for the same payment, session, raw body and signature
      header under the same active key, account and mode. The memo expires 60 seconds after the fetch
      starts. Failed fetches are evicted immediately so event-bus retries can fetch again.
-  7. Fetch with the active key. For fallback, the fetched `id` and `orderId` must match the body's,
-     and the fetched `livemode` must match the active mode, with the partner exception above.
-     Before returning any action, the provider re-reads the session and checks that its provider and
-     stored payment ID match the fetched payment. The fetched status and amount determine the action.
+  7. Fetch with the credentials resolved for this operation. For fallback, the fetched `id` and
+     `orderId` must match the body's, and the fetched `livemode` must match the active mode, with the
+     partner exception above.
+     Before returning any action, the provider re-reads the session and checks its provider and the
+     ID Medusa will act on: the attached payment's `data.id` if it exists, or the session's
+     `data.id` otherwise. The fetched status and amount determine the action.
   - Log lines: `MONEI callback verified (v2|v1) payment=<id>`,
-    `MONEI callback fallback fetch payment=<id>`, a quota deferral warning, and one line per refusal
-    with its reason. Refusals return `NOT_SUPPORTED`. Payment IDs enter the log only in MONEI format.
+    `MONEI callback fallback fetch payment=<id>`,
+    `MONEI webhook refused: fallback fetch quota reached payment=<id>` at error level, and one line per
+    other refusal with its reason. Refusals return `NOT_SUPPORTED`. Payment IDs enter the log only in
+    MONEI format.
   - The reconcile subscriber reports orphan payments whose session is gone or points to another
     payment. If the session is already gone or replaced at delivery, the callback must verify to
     reach the fetch and report the orphan. An account webhook delivered to a different provider's
     URL leaves that provider's sessions alone.
-  - Medusa answers 200 before the provider handles the event. Quota waits happen in the handler and
-    fetch failures can be retried by Medusa's event bus. Core owns order state after settlement.
+  - Medusa answers 200 before the provider handles the event. The event bus can retry fetch failures.
+    A quota refusal returns immediately because BullMQ retries have no backoff. Core owns order
+    state after settlement.
   - Known gap: a reconnect that replaces a connected Test row of account A with Test account B (Test
     accounts are not checked) strands A's open test payments: the fetch with B's key gets a 404.
   - Known gap, kept as in PHP: env `pk_test_` of account A plus a connected Test key of account B (Test
@@ -627,9 +636,10 @@ default.
 - [x] write fallback tests (each names its bug): an unverified body of an open session ⇒ fetched and
       the action returned (the revoked-key and missing-`v2` callbacks settle); a malformed payment id, or
       an `orderId` that is not `payses_…` ⇒ refused, no fetch; an unknown session ⇒ refused, no fetch; a 6th fallback for one
-      session within a minute, or a 61st in all ⇒ deferred with a warning and fetched when a slot
-      opens if the session still matches (fake timers); the provider and the reconcile subscriber handling one unverified
-      delivery with one slot left ⇒ one fetch, both get the payment; a first fetch that fails, then a
+      session within a minute, or a 61st in all ⇒ refused immediately with an error naming the
+      payment, with no delayed fetch, including after a key replacement (fake timers); the provider
+      and the reconcile subscriber handling one unverified delivery with one slot left ⇒ one fetch,
+      both get the payment; a first fetch that fails, then a
       retry of the same delivery ⇒ a second fetch; `AUTHORIZED` then `SUCCEEDED` bodies of one payment
       within 60 s ⇒ two fetches, and the second returns the capture action; an authorized session whose Medusa
       payment is not captured and a fetched `SUCCEEDED` ⇒ the capture action; a session whose Medusa

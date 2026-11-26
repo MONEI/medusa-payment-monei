@@ -12,8 +12,17 @@ const PAYMENT_ID = /^[a-f0-9]{32,40}$/i;
 export type WebhookSession = {
   provider_id?: string;
   data?: Record<string, unknown> | null;
-  payment?: { captured_at?: unknown; canceled_at?: unknown } | null;
+  payment?: {
+    data?: Record<string, unknown> | null;
+    captured_at?: unknown;
+    canceled_at?: unknown;
+  } | null;
 };
+
+/** Medusa acts on the attached payment if it exists, or authorizes the session otherwise. */
+export function settlementPaymentId(session: WebhookSession): unknown {
+  return session.payment ? session.payment.data?.id : session.data?.id;
+}
 
 type WebhookContext = {
   client: () => Monei;
@@ -26,7 +35,6 @@ type SignatureHeader = string | string[] | undefined;
 
 type Delivery = { expiresAt: number; result: Promise<Payment | undefined> };
 const deliveries = new Map<string, Delivery>();
-const deferred = new Map<string, Delivery>();
 let fallbackFetches: { at: number; sessionId: string }[] = [];
 
 /** The `MONEI-Signature` header in any case. */
@@ -141,7 +149,7 @@ async function fallbackSession(
 ): Promise<WebhookSession | undefined> {
   const session = await findSession(sessionId);
   if (!session) return ignoreWebhook(logger, "fallback callback session does not exist", id);
-  if (session.provider_id !== providerId || session.data?.id !== id) {
+  if (session.provider_id !== providerId || settlementPaymentId(session) !== id) {
     return ignoreWebhook(
       logger,
       "fallback callback session does not belong to this provider and payment",
@@ -154,20 +162,20 @@ async function fallbackSession(
   return session;
 }
 
-/** Reserve a slot or return how long both limits need to clear. */
-function takeFallbackSlot(sessionId: string): number {
+function takeFallbackSlot(sessionId: string): boolean {
   const now = Date.now();
   fallbackFetches = fallbackFetches.filter(({ at }) => at > now - MINUTE);
-  const sessionFetches = fallbackFetches.filter((fetch) => fetch.sessionId === sessionId);
-  const wait = Math.max(
-    fallbackFetches.length >= 60 ? fallbackFetches[0].at + MINUTE - now : 0,
-    sessionFetches.length >= 5 ? sessionFetches[0].at + MINUTE - now : 0,
-  );
-  if (!wait) fallbackFetches.push({ at: now, sessionId });
-  return wait;
+  if (
+    fallbackFetches.length >= 60 ||
+    fallbackFetches.filter((fetch) => fetch.sessionId === sessionId).length >= 5
+  ) {
+    return false;
+  }
+  fallbackFetches.push({ at: now, sessionId });
+  return true;
 }
 
-function fetchFallback(
+async function fetchFallback(
   credentials: Credentials,
   context: WebhookContext,
   id: string,
@@ -181,35 +189,30 @@ function fetchFallback(
     if (entry.expiresAt <= now) deliveries.delete(key);
   }
   // Both subscribers can reuse a fetch, but a key or merchant switch needs a fresh one.
-  const scope = createHash("sha256")
+  const key = createHash("sha256")
     .update(
-      JSON.stringify([id, sessionId, credentials.apiKey, credentials.accountId, credentials.mode]),
+      JSON.stringify([
+        id,
+        sessionId,
+        credentials.apiKey,
+        credentials.accountId,
+        credentials.mode,
+        raw,
+        signature,
+      ]),
     )
     .digest("hex");
-  const key = createHash("sha256")
-    .update(JSON.stringify([scope, raw, signature]))
-    .digest("hex");
-  const existing = deliveries.get(key) ?? deferred.get(scope);
+  const existing = deliveries.get(key);
   if (existing) return existing.result;
 
-  let wait = takeFallbackSlot(sessionId);
-  const clearDeferred = () => {
-    if (deferred.get(scope) === delivery) deferred.delete(scope);
-  };
+  if (!takeFallbackSlot(sessionId)) {
+    logger.error(`MONEI webhook refused: fallback fetch quota reached payment=${id}`);
+    return undefined;
+  }
+  logger.info(`MONEI callback fallback fetch payment=${id}`);
   const delivery: Delivery = {
-    expiresAt: Infinity,
-    result: Promise.resolve().then(async () => {
-      if (wait)
-        logger.warn(`MONEI callback deferred: fallback fetch quota reached${paymentLog(id)}`);
-      while (wait) {
-        await new Promise<void>((resolve) => setTimeout(resolve, wait));
-        if (!(await fallbackSession(context, id, sessionId))) return undefined;
-        wait = takeFallbackSlot(sessionId);
-      }
-      clearDeferred();
-      delivery.expiresAt = Date.now() + MINUTE;
-      logger.info(`MONEI callback fallback fetch payment=${id}`);
-      const payment = await callMonei("get payment", () => client().payments.get(id));
+    expiresAt: now + MINUTE,
+    result: callMonei("get payment", () => client().payments.get(id)).then((payment) => {
       if (payment.id !== id || payment.orderId !== sessionId) {
         return ignoreWebhook(
           logger,
@@ -227,16 +230,13 @@ function fetchFallback(
       return payment;
     }),
   };
-  if (wait) deferred.set(scope, delivery);
   deliveries.set(key, delivery);
-  const discard = () => {
-    clearDeferred();
+  try {
+    return await delivery.result;
+  } catch (error) {
     if (deliveries.get(key) === delivery) deliveries.delete(key);
-  };
-  void delivery.result.then(() => {
-    if (delivery.expiresAt === Infinity) discard();
-  }, discard);
-  return delivery.result;
+    throw error;
+  }
 }
 
 /** Read only the raw callback. Only the fetched payment supplies settlement data. */

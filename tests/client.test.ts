@@ -67,6 +67,18 @@ describe("validateOptions", () => {
     expect(validateOptions({ backendUrl: "https://shop.test" }).apiKey).toBeUndefined();
   });
 
+  it.each(["", "  ", "whsec_", "wrong_prefix", "whsec_" + "a".repeat(42), null, 42])(
+    "rejects an unusable account webhook signing secret at startup (%j)",
+    (secret) => {
+      expect(() =>
+        validateOptions({
+          backendUrl: "https://shop.test",
+          accountWebhookSigningSecrets: { pp_monei_monei: secret as string },
+        }),
+      ).toThrow("`accountWebhookSigningSecrets`");
+    },
+  );
+
   it("rejects a non-boolean capture", () => {
     // Bug: `capture: process.env.X` gives the string "false", and SALE charges at once.
     expect(() =>

@@ -24,7 +24,11 @@ import {
   type Query,
   query as resolveQuery,
 } from "../providers/monei/core/scope";
-import { verifyWebhook, type WebhookSession } from "../providers/monei/core/webhook";
+import {
+  settlementPaymentId,
+  verifyWebhook,
+  type WebhookSession,
+} from "../providers/monei/core/webhook";
 import { fromMinorUnits } from "../providers/monei/utils/amount";
 import { HELD_OR_MOVED } from "../providers/monei/utils/status";
 import { scheduleHoldRelease } from "./monei-hold-release";
@@ -43,7 +47,15 @@ async function findSession(query: Query, id: string): Promise<StoredSession | un
   return (await findOne(
     query,
     "payment_session",
-    ["id", "provider_id", "data", "context", "payment.captured_at", "payment.canceled_at"],
+    [
+      "id",
+      "provider_id",
+      "data",
+      "context",
+      "payment.data",
+      "payment.captured_at",
+      "payment.canceled_at",
+    ],
     { id },
   )) as StoredSession | undefined;
 }
@@ -62,7 +74,7 @@ async function reportOrphan(
     status: payment.status,
   };
   logger.error(
-    `MONEI orphan payment: payment ${data.payment_id} of ${data.amount} ${data.currency} is ${data.status}, but session ${data.session_id} ${session ? `points to payment ${String(session.data?.id)}` : "no longer exists"}; if no order was created, ${data.status === PaymentStatus.AUTHORIZED ? "cancel" : "refund"} it in the MONEI dashboard`,
+    `MONEI orphan payment: payment ${data.payment_id} of ${data.amount} ${data.currency} is ${data.status}, but session ${data.session_id} ${session ? `points to payment ${String(settlementPaymentId(session))}` : "no longer exists"}; if no order was created, ${data.status === PaymentStatus.AUTHORIZED ? "cancel" : "refund"} it in the MONEI dashboard`,
   );
   await container
     .resolve<IEventBusModuleService>(Modules.EVENT_BUS)
@@ -129,7 +141,7 @@ export default async function moneiPaymentReconcile({
     client,
     logger,
     providerId,
-    accountWebhookSigningSecret: options.accountWebhookSigningSecret,
+    accountWebhookSigningSecret: options.accountWebhookSigningSecrets?.[providerId],
     findSession: (id) => findSession(query, id),
   });
   if (!callback) return;
@@ -143,7 +155,7 @@ export default async function moneiPaymentReconcile({
 
   // An account webhook may deliver payments from several providers to the same URL.
   if (session && session.provider_id !== providerId) return;
-  if (session?.data?.id !== payment.id) {
+  if (!session || settlementPaymentId(session) !== payment.id) {
     if (HELD_OR_MOVED.has(payment.status)) await reportOrphan(container, logger, payment, session);
     return;
   }

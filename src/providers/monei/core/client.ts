@@ -21,6 +21,20 @@ const MAX_RELEASE_HOLDS_AFTER_MINUTES = 10_080;
 export function validateOptions(options: Partial<MoneiOptions> = {}): MoneiOptions {
   const apiKey =
     typeof options.apiKey === "string" ? options.apiKey.trim() || undefined : undefined;
+  const secrets = options.accountWebhookSigningSecrets;
+  if (
+    secrets !== undefined &&
+    (!secrets ||
+      typeof secrets !== "object" ||
+      Array.isArray(secrets) ||
+      Object.values(secrets).some(
+        (secret) => typeof secret !== "string" || !/^whsec_[A-Za-z0-9_-]{43}$/.test(secret),
+      ))
+  ) {
+    throw new Error(
+      "Option `accountWebhookSigningSecrets` must map Medusa provider IDs to MONEI whsec_ signing secrets",
+    );
+  }
   // MEDUSA_BACKEND_URL is the variable Medusa's docs use for the backend URL (the
   // default of `admin.backendUrl`); the server does not know its public URL itself.
   const backendUrl = options.backendUrl || process.env.MEDUSA_BACKEND_URL?.trim();

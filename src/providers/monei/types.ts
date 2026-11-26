@@ -1,7 +1,7 @@
 export type MoneiOptions = {
   apiKey?: string;
-  /** Signing secret of a MONEI account webhook, for account events such as dashboard captures. */
-  accountWebhookSigningSecret?: string;
+  /** MONEI account webhook signing secrets keyed by Medusa provider ID (e.g. pp_monei_monei). */
+  accountWebhookSigningSecrets?: Record<string, string>;
   /** Partner accounts only: the merchant account to act for. */
   accountId?: string;
   /**

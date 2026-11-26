@@ -1,5 +1,6 @@
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { EntityManager } from "@medusajs/framework/mikro-orm/postgresql";
+import type { Client } from "@medusajs/framework/pg";
 import type { Context } from "@medusajs/framework/types";
 import {
   generateEntityId,
@@ -76,17 +77,21 @@ export default class MoneiConnectService extends MedusaService({
         if (!credential) continue;
         const previous = rows.find((row) => row.mode === mode);
         if (previous) await this.deleteMoneiCredentials(previous.id, context);
-        // A bound Knex insert bypasses MikroORM's interpolated query logging.
+        // The transaction client returns its pinned pg connection. Sending the
+        // insert directly keeps its bindings and errors out of both query loggers.
         try {
-          await trx("monei_credential")
-            .insert({
-              id: generateEntityId(undefined, "mcred"),
+          const connection: Client = await trx.client.acquireConnection();
+          await connection.query({
+            text: `insert into monei_credential (id, mode, account_id, api_key, signing_secret)
+                   values ($1, $2, $3, $4, $5)`,
+            values: [
+              generateEntityId(undefined, "mcred"),
               mode,
-              account_id: credential.accountId,
-              api_key: credential.apiKey,
-              signing_secret: credential.signingSecret,
-            })
-            .debug(false);
+              credential.accountId,
+              credential.apiKey,
+              credential.signingSecret,
+            ],
+          });
         } catch {
           // PostgreSQL errors can include the full failing row.
           throw new Error(`Could not write the MONEI ${mode} credential`);
