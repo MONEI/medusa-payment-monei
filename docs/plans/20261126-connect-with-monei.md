@@ -460,8 +460,13 @@ at this task.
 
 ➕ **Owner:** the Sylius session runs this task end to end (agreed 2026-11-26). This plan marks it done
 with its PR links and the common release version.
-- PRs so far: https://github.com/MONEI/monei-php-sdk/pull/38 (PHP SDK mirror + test rows; merges after
-  the authorization-service PR).
+- PRs so far (2026-11-26):
+  - released: https://github.com/MONEI/common/pull/2744 (`@monei/common@14.20.0`),
+    https://github.com/MONEI/monei-php-sdk/pull/38 (PHP SDK 2.18.0);
+  - merged to master (dev): https://github.com/MONEI/account-service/pull/1435,
+    https://github.com/MONEI/appsync-service/pull/1038, https://github.com/MONEI/cognito-service/pull/356;
+  - open: https://github.com/MONEI/authorization-service/pull/152 (after the account-service dev
+    deploy); dashboards labels after the appsync dev deploy.
 
 **Files:**
 
