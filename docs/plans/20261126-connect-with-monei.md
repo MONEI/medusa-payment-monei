@@ -482,8 +482,9 @@ with its PR links and the common release version.
     https://github.com/MONEI/monei-php-sdk/pull/38 (PHP SDK 2.18.0);
   - merged to master (dev): https://github.com/MONEI/account-service/pull/1435,
     https://github.com/MONEI/appsync-service/pull/1038, https://github.com/MONEI/cognito-service/pull/356;
-  - open: https://github.com/MONEI/authorization-service/pull/152 (after the account-service dev
-    deploy); dashboards labels after the appsync dev deploy.
+  - merged and deployed to dev: https://github.com/MONEI/authorization-service/pull/152;
+  - open: https://github.com/MONEI/dashboards/pull/1371 (labels and enum snapshot).
+- ✅ Done by the Sylius session (2026-11-26). Prod deploys wait for the user.
 
 **Files:**
 
@@ -504,28 +505,28 @@ with its PR links and the common release version.
   snapshot)
 - Modify (monei-php-sdk): `lib/Connect.php` `CLIENTS` mirror (+ test rows)
 
-- [ ] common: `medusa` and `sylius` in `API_KEY_INTEGRATIONS` and the `ApiKeyIntegration` enums;
+- [x] common: `medusa` and `sylius` in `API_KEY_INTEGRATIONS` and the `ApiKeyIntegration` enums;
       `integrationKeyScopesOf(client)` = the shared list, plus `customers:read` for `medusa`;
       `createIntegrationApiKeyInputSchema` refuses a scope outside `integrationKeyScopesOf(integration)`
-- [ ] common release (ask the user); then bump it in account-service, appsync-service and
+- [x] common release (ask the user); then bump it in account-service, appsync-service and
       authorization-service
-- [ ] authorization-service: `CLIENTS.medusa` = `{name: 'Medusa', callbacks: [{path: '/monei/connect',
+- [x] authorization-service: `CLIENTS.medusa` = `{name: 'Medusa', callbacks: [{path: '/monei/connect',
       search: /^$/}], maxPrefix: 2, indexPhp: 0}` and the Sylius entry; the token route mints, and the
       consent page lists, `integrationKeyScopesOf(client)`
-- [ ] appsync-service enum, dashboards labels, cognito-service route fixture, PHP SDK mirror
-- [ ] write common tests: a `medusa` create with `customers:read` passes; a `woocommerce` create with
+- [x] appsync-service enum, dashboards labels, cognito-service route fixture, PHP SDK mirror
+- [x] write common tests: a `medusa` create with `customers:read` passes; a `woocommerce` create with
       `customers:read` is refused (the existing "a leaked key cannot read customers" rule stays for the
       PHP clients); an unknown `integration` is refused; account-service's pinned message updated
-- [ ] write broker tests: accepted `https://api.shop.example/monei/connect` and
+- [x] write broker tests: accepted `https://api.shop.example/monei/connect` and
       `https://shop.example/a/b/monei/connect`; refused `https://shop.example/a/b/c/monei/connect`
       ⇒ `callbackDepth`, `https://shop.example/monei/connect?x=1` and
       `https://shop.example/monei/connect/` ⇒ `callbackPath`; a `medusa` token and offer carry
       `customers:read`, a `woocommerce` one does not
-- [ ] write cognito-service fixture rows: every MONEI route the Medusa plugin calls (`payments` get,
+- [x] write cognito-service fixture rows: every MONEI route the Medusa plugin calls (`payments` get,
       create, confirm, capture, cancel, refund; `customers` create, get, delete, payment-methods list
       and delete; `POST /apple-pay/domains`; `GET /allowed-payment-methods`) fits the `medusa` scopes
-- [ ] write PHP SDK tests with the same `medusa` rows
-- [ ] run each repo's tests — must pass before next task
+- [x] write PHP SDK tests with the same `medusa` rows
+- [x] run each repo's tests — must pass before next task
 
 ### Task 2: Connect helpers in the Node SDK (`monei-node-sdk`)
 
