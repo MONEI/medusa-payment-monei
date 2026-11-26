@@ -81,7 +81,13 @@
     The session cookie is `SameSite=Lax` in production and `false` in development
     (`framework/http/express-loader.js`).
   - `MedusaService` generates `create`, `update`, `delete`, `softDelete`, `restore`, `list`,
-    `retrieve`; an upsert or an atomic consume needs a custom service method.
+    `retrieve`; an atomic consume needs a custom service method (`@InjectTransactionManager`).
+  - DML ids are generated in JS (`text not null`, no DB default), so a raw `INSERT` or a psql seed must
+    give an `id`. DML unique indexes are partial (`WHERE deleted_at IS NULL`) unless declared with
+    `where: null` (`dml/helpers/entity-builder/build-indexes.js`), and Postgres cannot match a partial
+    index from `ON CONFLICT (col)`. The plan therefore writes credentials with the generated
+    `delete`/`create` inside one transaction, never with `ON CONFLICT`.
+  - `medusa plugin:db:generate` connects to a real Postgres (`DATABASE_URL`).
 - Broker and key creation:
   - authorization-service `src/broker/integrations.ts` `CLIENTS` keyed by `ApiKeyIntegration`;
     the consent page (`integrationOffer.ts`) shows `integrationKeyScopes`; the token route mints with
@@ -117,7 +123,8 @@
   - a `state` stored by a request that is not an authenticated admin, or by a cross-site request;
   - a forged disconnect clearing the credentials;
   - working credentials replaced by a failed, refused or unproven connect;
-  - a connect or a disconnect that changes the mode of a backend (test to live, or live to test);
+  - a connect or a disconnect that changes the mode of a backend that has an env key (test to live, or
+    live to test);
   - a Live connect of another MONEI account accepted;
   - a full `mk_` key or `mksec_` secret in an API answer, a page or a log line;
   - a signed callback of the other mode settling a session;
@@ -126,11 +133,13 @@
   - a Connect button on a backend whose callback URL the broker refuses for a reason the plugin can
     check;
   - checkout broken after an upgrade without `medusa db:migrate`.
-- unit tests use the repo's tools: `vi.useFakeTimers` for time, `MockAdapter` on the SDK's axios client
-  for MONEI. Only the store gets a seam (no database in unit tests). Each test file calls
-  `clearCredentialsCache()` in `beforeEach`.
-- database behaviour (`consumeState`, the upsert, the knex reader) is tested in e2e against the real
-  Postgres, never with a source pin
+- unit tests use the repo's tools: `vi.useFakeTimers` for time, and for MONEI a mocked
+  `createMoneiClient` that attaches one `MockAdapter` per created client, keyed by its `apiKey` (so a
+  test can answer the old key and the new key differently, and see a fresh client). Only the store gets
+  a seam (no database in unit tests). Each test file calls `clearCredentialsCache()` in `beforeEach`.
+  A logger assertion about secrets serializes every argument of every call.
+- database behaviour (`consumeState`, the switch, `disconnect`) and the real request parsing (the JSON
+  guard) are tested in e2e against the real stack, never with a source pin or a stubbed `req.is`
 - a task that names a **Gate** stops and asks the user until the gate holds; exec cannot release it
 - the e2e suite needs a real `MONEI_TEST_API_KEY` in `e2e/.env`: a task that runs it asks the user first
 - one branch per repo, cut from freshly pulled `main`/`master` (worktrees); open PRs, never merge,
@@ -143,17 +152,28 @@
 
 - **unit tests**: every task (Vitest in the plugin and the Node SDK; each other repo's own runner)
 - **e2e** (plugin Playwright suite, real backend through the tunnel, so `https`), `e2e/specs/connect.spec.ts`:
-  - status, start and disconnect without admin auth ⇒ 401, and no `state` row / credentials unchanged;
-  - start with a body that is not JSON from an authenticated admin ⇒ refused, no `state` row;
-  - start from an authenticated admin (bearer, and once with a secret API key) ⇒ `{url}` on the
-    configured broker base with `client_id=medusa`, `code_challenge_method=S256` and
+  - status, start and disconnect without admin auth ⇒ 401; no `state` row is added, and a seeded
+    credential row stays (then removed);
+  - start from an authenticated admin with `text/plain`, `text/plain; x=application/json`,
+    `application/x-www-form-urlencoded`, `multipart/form-data` or no content type ⇒ refused, no row;
+  - start from an authenticated admin with JSON `{}` (bearer, and once with a secret API key) ⇒ `{url}`
+    on the configured broker base with `client_id=medusa`, `code_challenge_method=S256` and
     `redirect_uri=<MEDUSA_BACKEND_URL>/monei/connect`; psql finds the row of the URL's `state`;
+  - status: `startProblem` null on the tunnel backend, and the body holds no env key value;
   - a forged `state` callback with a `code` ⇒ error page, `Referrer-Policy: no-referrer`, a seeded row
-    stays; a seeded row 20 min 1 s old ⇒ expired, and the row is gone; one fresh row called back twice
-    ⇒ the second call gets the unknown-`state` page; two concurrent callbacks of one row ⇒ exactly one
-    reaches the exchange;
-  - a backend restarted without `MONEI_API_KEY` and with a seeded connected Test row (the real test
-    key) ⇒ a hosted-page payment completes;
+    stays; a seeded row 20 min 1 s old ⇒ `expired`, and the row is gone; one fresh row called back twice
+    ⇒ the second call gets `unknownState`; 10 parallel callbacks of one row ⇒ exactly one
+    `temporarily_unavailable` page (the dead broker), nine `unknownState`;
+  - an authenticated disconnect on psql-seeded credential, secret and `state` rows ⇒ the credentials
+    and `state` rows are gone, the secrets stay;
+  - the switch on real Postgres: a test-only `medusa exec` script in the backend container
+    (`e2e/backend/src/scripts/monei-switch.ts`) calls the module's `switchCredentials` twice for Test
+    with different secrets ⇒ one Test row with the second key, both secrets stored;
+  - a backend restarted without `MONEI_API_KEY` and with a seeded connected Test row (the real
+    `pk_test_` key) ⇒ a hosted-page payment completes through the return page, and the backend log has
+    the "unverified callback" error for its payment (no `v2` can match a seeded secret, and there is no
+    env key for `v1`). So this spec covers the outbound key path only; `v2` is covered by unit tests and
+    the manual e2e;
   - the existing env-key payment specs pass unchanged.
 - The e2e backend sets `MONEI_CONNECT_BASE_URL` to a host that refuses connections, so no e2e call
   reaches a real broker. The exchange then ends in `temporarily_unavailable`, which is enough to see
@@ -186,10 +206,18 @@
     Disconnect and a new connect. Keeping old secrets is low risk: a verified body is only a pointer,
     and the payment is fetched with the key in effect.
   - `monei_connect_state`: `state` (unique), `verifier`, `redirect_uri`, `created_at`.
-  - Custom service methods: `consumeState(state)` (one `DELETE … WHERE state = ? AND created_at > now()
-    - 20 min RETURNING`, so a `state` is single-use also under concurrency), `upsertCredential(mode,
-    …)` (`INSERT … ON CONFLICT (mode) DO UPDATE`, plus the secret insert, in one transaction),
-    `disconnect()`.
+  - Every time rule uses the database clock (`now()`), never the app clock.
+  - Custom service methods:
+    - `consumeState(state)`: one `DELETE FROM monei_connect_state WHERE state = ? RETURNING verifier,
+      redirect_uri, now() - created_at > interval '20 minutes' AS expired`. A `state` is single-use also
+      under concurrency, an expired row is deleted too, and the caller can tell `expired` from
+      `unknownState`.
+    - `deleteOldStates()`: `DELETE … WHERE created_at < now() - interval '20 minutes'`.
+    - `switchCredentials(results)`: one transaction that takes `pg_advisory_xact_lock` (a constant
+      key), re-reads the stored Live row past every cache, runs the stored-Live account check, then per
+      proven mode deletes the old row and creates the new one with the generated methods, and creates
+      the secret row unless it exists. Two concurrent connects therefore run one after the other.
+    - `disconnect()`: deletes both credential rows and every `state` row; keeps the secrets.
 - **Mode and key in effect** (the PHP rule "a connect never changes the mode", without a mode setting):
   - The env key's mode: `_test_` right after the key type (`pk_test_`, `mk_test_`) is test; any other
     key is live (an unknown prefix is never shadowed by a connected Test key).
@@ -197,8 +225,10 @@
     the env key. A connected row of the other mode is stored and shown, but not used. To go live, the
     merchant removes the env `pk_test_` key and restarts.
   - Without an env key: connected Live, else connected Test, else none.
-  - So a connect never moves a backend between modes, and Disconnect falls back to the env key of the
-    same mode (or to none).
+  - So with an env key, a connect never moves the backend between modes, and Disconnect falls back to
+    the env key of the same mode. ⚠️ Without an env key, a backend on a connected Test key moves to Live
+    when a later connect returns Live (after the account's approval). The user decides whether to keep
+    this or to store the mode (Stage 5 question; the PHP plugins have a mode setting).
   - `apiKey` becomes optional in `validateOptions`. With no key in effect, every MONEI call throws
     "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY". The boot does not
     fail (the merchant needs a running backend to connect), and the Apple Pay job logs a warning and
@@ -206,31 +236,37 @@
   - With the partner `accountId` option set, Connect is refused (`partner`) and connected rows are
     ignored: a scoped key cannot act for another account. A connected key never sends
     `MONEI-Account-ID`.
-  - One reader, `loadCredentials(knex, options)`, used by the provider (cradle `__pg_connection__`) and
-    by routes, subscribers and the job (container `__pg_connection__`). It filters nothing but `mode`
-    (hard delete only) and caches the result per process for 30 s.
-  - A missing `monei_*` table (an upgrade without `medusa db:migrate`) counts as no rows, with one
-    warning per process. The env key keeps working.
+  - One reader, `loadCredentials(knex, options, {fresh?})`, used by the provider (cradle
+    `__pg_connection__`) and by routes, subscribers and the job (container `__pg_connection__`). It
+    caches the result per process for 30 s; `fresh` reads past the cache without clearing it.
+  - A missing `monei_*` table (pg error code `42P01`, an upgrade without `medusa db:migrate`) counts as
+    no rows, with one warning per process. The env key keeps working. Any other database error throws
+    and is never cached.
   - The instance that writes clears its cache at once. Another instance or the worker may use the old
     key for up to 30 s. That is safe for calls: nothing revokes the old key. For callbacks see below.
   - The client is resolved per call (`await moneiClient(scope)`, `await this.client()`), cached per key.
 - **Start** `POST /admin/monei/connect` (authenticated admin):
   - Refuses before any read or write when the request is not `application/json` (`req.is()`, the
-    media-type essence: `text/plain; x=application/json` is refused). A cross-site form or no-cors
+    media-type essence: `text/plain; x=application/json` is refused). `req.is()` gives `null` for an
+    empty body, so callers send `{}` (the page, the README's curl, the e2e). A cross-site form or no-cors
     fetch can only send CORS-safelisted types, so it never reaches the start. That covers the
     development cookie (`SameSite=false`). A cross-origin JSON fetch needs a CORS preflight, and
     `adminCors` refuses it.
   - Refuses with `partner` or the redirect-URI problem before `Connect.start`.
-  - Deletes `state` rows older than 20 min, runs `Connect.start('medusa', redirectUri, base)`, stores
-    the row, and answers `{url}`. The verifier stays in the row.
+  - `deleteOldStates()`, runs `Connect.start('medusa', redirectUri, base)`, stores the row, and
+    answers `{url}`. The verifier stays in the row.
 - **Status** `GET /admin/monei/connect`: per mode `{source: "connected" | "env" | null, accountId,
-  last4}`, the mode in effect, and the start problem (`partner`, a `callbackProblem` code, or null).
+  last4}`, the mode in effect, and `startProblem` (`partner`, a `callbackProblem` code, or null).
   Never a full key or secret.
 - **Disconnect** `DELETE /admin/monei/connect` (authenticated admin): an HTML form cannot send DELETE,
-  and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It deletes both
-  `monei_credential` rows and every `state` row, keeps `monei_signing_secret`, clears the cache, and
-  answers the dashboard API keys URL. The keys stay active until the merchant revokes them there. An
-  env key is never touched.
+  and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It runs
+  `disconnect()`, clears the cache, and answers the dashboard API keys URL. The keys stay active until
+  the merchant revokes them there. An env key is never touched.
+- **Revoking and removing old keys:** MONEI deletes a revoked key, and the callbacks of the payments it
+  made then carry only `v1` (the account `pk_` key). Payments made with an env `pk_` key never carry
+  `v2`. So the Disconnect answer, the `cap` text and the README say: revoke an old key, or remove
+  `MONEI_API_KEY`, only after the open payments it made have settled (Multibanco and MB WAY can stay
+  open for days).
 - **Callback** `GET /monei/connect?code&state` (public):
   - `consumeState`: unknown, missing, used or expired ⇒ error page, no exchange.
   - With an `error` from the broker, or without `code` ⇒ error page. Nothing changes.
@@ -246,30 +282,37 @@
     connect is refused, Test too (`otherAccount`: "This backend uses another MONEI account. Disconnect
     first, or remove the env key.").
     - Connected Live row: its `account_id`.
-    - Env Live key: `paymentMethods.getAllowed()` with the env key on a fresh client. A 2xx with
-      `accountId` ⇒ compare. A 400, 401 or 403 ⇒ nothing to compare (the env key cannot operate the
-      account), a warning, the switch goes on. A 2xx without `accountId`, a 5xx, a 429 or no answer ⇒
-      the connect is refused with `temporarily_unavailable`.
+    - Env Live key: `paymentMethods.getAllowed()` with the env key on a fresh client, before the
+      transaction. A 2xx with `accountId` ⇒ compare. A 401 or 403 ⇒ nothing to compare (the key cannot
+      operate the account), a warning, the switch goes on. Anything else ⇒ the connect is refused with
+      `temporarily_unavailable`: a 400 (the account has no enabled provider, but the key still works),
+      a 2xx without `accountId`, a 5xx, a 429 or no answer.
   - A returned Test `accountId` alone is not checked (PHP rule: the shared test-account repair).
   - One test call with the new key on a fresh client (never the cached one):
-    `paymentMethods.getAllowed()`. A 2xx or 400 proves the key. A 401 or 403 ⇒ `keyRejected`. Any other
-    answer or none ⇒ `temporarily_unavailable`. A mode that is not proven is dropped, and its old values
-    stay.
-  - Proven ⇒ `upsertCredential` for that mode. A mode not returned keeps its row. A failed exchange, or
-    a 200 with only `errors`, changes nothing.
-  - After a switch: clear the local cache, then register the storefront Apple Pay domains with the new
-    key in effect (the job's loop, extracted). An Apple Pay error keeps the switch.
+    `paymentMethods.getAllowed()`. A 2xx or 400 proves the key. A 2xx whose `livemode` is not the
+    mode's slot, or whose `accountId` is not the returned `accountId` ⇒ `keyRejected`. A 401 or 403 ⇒
+    `keyRejected`. Any other answer or none ⇒ `temporarily_unavailable`. A mode that is not proven is
+    dropped, and its old values stay.
+  - Proven modes go to `switchCredentials`. A mode not returned keeps its row. A failed exchange, or a
+    200 with only `errors`, changes nothing.
+  - After a switch: clear the local cache and send the page. Then register the storefront Apple Pay
+    domains with the new key in effect (the job's loop, extracted), after the response, so a slow
+    Apple Pay call never times the page out. An Apple Pay error keeps the switch.
 - **Callback verify** (`verifyWebhook(credentials, payload)`, used by the provider and the reconcile
   subscriber):
   1. `v2` with each stored secret of the mode in effect (current first). The SDK's
      `verifySignature(body, signature, secret)`.
-  2. If no secret verifies and the key in effect is connected: reload the credentials past the cache
-     and try once more (a worker whose cache predates a reconnect).
+  2. If the header has a `v2` and no stored secret verifies it: `loadCredentials(…, {fresh: true})`
+     and try once more (a worker whose cache predates a connect or reconnect). At most one fresh read
+     per 5 s per process, so forged `v2` headers cannot load the database.
   3. `v1` with the env key, when one is set: `verifySignature(body, signature)` on a `Monei` built with
      the env key, never on the connected client (its key is `mk_`).
-  4. Else refused (`NOT_SUPPORTED`, no fetch). On a backend whose key in effect is connected, the log
-     line is an error naming the body's payment id as unverified, so the merchant can check it in the
-     dashboard.
+  4. Else refused (`NOT_SUPPORTED`, no fetch). For a payment body on a backend whose key in effect is
+     connected, the log line is an error naming the body's payment id as unverified, so the merchant can
+     check it in the dashboard; the id is logged only when it has the MONEI id format (no log
+     injection). An account-webhook envelope is logged as a warning: it is signed with the webhook's own
+     `whsec_` secret, which the plugin does not store, so a connected-only backend cannot verify it
+     (README).
   - After a signature passes, the body's `livemode` (Payment body, or the event's `object`) must be a
     boolean equal to the mode in effect; absent or not a boolean ⇒ refused. Without this, a signed Test
     callback would be fetched with the Live key, or the other way.
@@ -300,15 +343,18 @@
 
 ## Implementation Steps
 
+
 ### Task 1: Shared broker task: add the `medusa` and `sylius` integration clients
 
 One change set for both new clients, owned jointly with the Sylius plan (SyliusMoneiPlugin
-`docs/plans/20261126-sylius-connect-with-monei.md`, Task 6). This task is the full list for both; the
-Sylius plan's Task 6 list is a subset (it has no per-client scopes and no account-service). Whichever
-plan runs first does this whole task; the other marks it done with the PR links.
+`docs/plans/20261126-sylius-connect-with-monei.md`, Task 6). This task is the full list for both. The
+Sylius plan's Task 6 list is a subset today: it has no per-client scopes, no common
+`internals/apiKey.ts`, and no account-service, appsync-service or cognito-service. Whichever plan runs
+first does this whole task; the other marks it done with the PR links.
 
-**Gate:** stop and ask the user until the Sylius plan has confirmed its callback form (today
-`/monei/connect`, `maxPrefix: 2`) and its scopes, so both clients land in one PR per repo.
+**Gate:** stop and ask the user until (a) the Sylius plan has confirmed its callback form (today
+`/monei/connect`, `maxPrefix: 2`) and its scopes, and (b) the Sylius plan's Task 6 points at this
+task's list, so a Sylius-first run cannot ship a subset.
 
 **Files:**
 
@@ -316,7 +362,8 @@ plan runs first does this whole task; the other marks it done with the PR links.
   `src/authorization/catalogue.ts` (`integrationKeyScopesOf`), `src/internals/apiKey.ts`
   (`createIntegrationApiKeyInputSchema`: scopes per `integration`) (+ `apiKey.test.ts`),
   `src/graphql/appSync/schema.graphql` and generated `api.ts` (`ApiKeyIntegration`)
-- Modify (account-service): the common bump (`createIntegrationApiKey` validates with the new schema)
+- Modify (account-service): the common bump; `src/createIntegrationApiKey/createIntegrationApiKey.test.ts`
+  (it pins the zod message of the scope refusal, which a per-integration schema changes)
 - Modify (appsync-service): `src/schema/apiKeys.graphql` (`ApiKeyIntegration`), the common bump
 - Modify (authorization-service): `src/broker/integrations.ts` `CLIENTS` (+ `integrations.test.ts`),
   `integrationToken.ts` and `integrationOffer.ts` (scopes of the client), the common bump
@@ -328,13 +375,15 @@ plan runs first does this whole task; the other marks it done with the PR links.
 - [ ] common: `medusa` and `sylius` in `API_KEY_INTEGRATIONS` and the `ApiKeyIntegration` enums;
       `integrationKeyScopesOf(client)` = the shared list, plus `customers:read` for `medusa`;
       `createIntegrationApiKeyInputSchema` refuses a scope outside `integrationKeyScopesOf(integration)`
+- [ ] common release (ask the user); then bump it in account-service, appsync-service and
+      authorization-service
 - [ ] authorization-service: `CLIENTS.medusa` = `{name: 'Medusa', callbacks: [{path: '/monei/connect',
       search: /^$/}], maxPrefix: 2, indexPhp: 0}` and the Sylius entry; the token route mints, and the
       consent page lists, `integrationKeyScopesOf(client)`
 - [ ] appsync-service enum, dashboards labels, cognito-service route fixture, PHP SDK mirror
 - [ ] write common tests: a `medusa` create with `customers:read` passes; a `woocommerce` create with
       `customers:read` is refused (the existing "a leaked key cannot read customers" rule stays for the
-      PHP clients); an unknown `integration` is refused
+      PHP clients); an unknown `integration` is refused; account-service's pinned message updated
 - [ ] write broker tests: accepted `https://api.shop.example/monei/connect` and
       `https://shop.example/a/b/monei/connect`; refused `https://shop.example/a/b/c/monei/connect`
       ⇒ `callbackDepth`, `https://shop.example/monei/connect?x=1` and
@@ -348,7 +397,7 @@ plan runs first does this whole task; the other marks it done with the PR links.
 
 ### Task 2: Connect helpers in the Node SDK (`monei-node-sdk`)
 
-**Gate:** stop and ask the user until Task 1 has merged (the `CLIENTS` values are final).
+**Gate:** stop and ask the user until the Task 1 PRs have merged (the `CLIENTS` values are final).
 
 **Files:**
 
@@ -368,45 +417,51 @@ plan runs first does this whole task; the other marks it done with the PR links.
       a truncated 200 ⇒ an error whose message holds no `mk_` or `mksec_` value; fresh `state` and
       verifier per call; `https://Shop.example:443/monei/connect` ⇒ `https://shop.example/monei/connect`
 - [ ] run tests — must pass before next task
+- [ ] Node SDK release (ask the user; release-it)
 
 ### Task 3: Credentials module and key resolution (`medusa-payment-monei`)
 
-**Gate:** stop and ask the user until the Node SDK release with Task 2 exists (bump
-`@monei-js/node-sdk`).
+**Gate:** stop and ask the user until the Node SDK release of Task 2 exists.
 
 **Files:**
 
 - Create: `src/modules/monei-connect/index.ts`, `service.ts`, `models/credential.ts`,
-  `models/signing-secret.ts`, `models/connect-state.ts`, `migrations/*` (`medusa plugin:db:generate`),
+  `models/signing-secret.ts`, `models/connect-state.ts`, `migrations/*`,
   `src/providers/monei/core/credentials.ts`, `tests/credentials.test.ts`
 - Modify: `package.json` (`exports["./.medusa/server/src/modules/*"]`, the SDK bump),
-  `src/providers/monei/core/client.ts`, `scope.ts`, `monei-base.ts`, `types.ts`,
-  `src/jobs/monei-apple-pay-domains.ts`, `src/subscribers/*`, `src/api/store/monei/*` (await the
-  client), `tests/module.test.ts`, the tests that reach `client_` or mock `createMoneiClient`
+  `e2e/backend/package.json` and its lock (the SDK pin), `src/providers/monei/core/client.ts`,
+  `scope.ts`, `monei-base.ts`, `types.ts`, `src/jobs/monei-apple-pay-domains.ts`, `src/subscribers/*`,
+  `src/api/store/monei/*` (await the client), `tests/module.test.ts`, the tests that reach `client_` or
+  mock `createMoneiClient`
 
 - [ ] module `monei_connect` with the three models, the unique indexes, and the custom service methods
-      `consumeState`, `upsertCredential`, `disconnect`
+      `consumeState`, `deleteOldStates`, `switchCredentials`, `disconnect` (Solution Overview, Storage)
+- [ ] migrations with `medusa plugin:db:generate` against a local Postgres (`DATABASE_URL`; the e2e
+      compose Postgres maps no host port, so start a throwaway `postgres` container for it)
 - [ ] the `exports` entry so a host app resolves the module; check on the peer floor 2.17.0
       (`e2e/README.md` "Another Medusa version"): the module merges and migrates and the provider
       container has `__pg_connection__`, or raise the peer floor (changelog note)
-- [ ] `loadCredentials(knex, options)` ⇒ `{mode, apiKey, accountId?, secrets, source, envKey?}` with the
-      mode rules of the Solution Overview; 30 s per-process cache; `clearCredentialsCache()`; a missing
-      table counts as no rows with one warning
+- [ ] `loadCredentials(knex, options, {fresh?})` ⇒ `{mode, apiKey, accountId?, secrets, source,
+      envKey?}` with the mode rules of the Solution Overview; 30 s per-process cache;
+      `clearCredentialsCache()`; `42P01` counts as no rows with one warning; other errors throw uncached
 - [ ] `apiKey` optional in `validateOptions`; a call without any key throws the "not connected" error;
       the `accountId` option ignores connected rows; a connected key never sends `MONEI-Account-ID`
 - [ ] the provider resolves its client per call (`this.client()`); `moneiClient(scope)` becomes async
       and reads the same credentials; update every caller; the Apple Pay job warns and returns with no
       key
 - [ ] write tests for the mode rules (each row names its bug): env `pk_test_` + connected Live and Test
-      ⇒ the connected Test key (a connect moves no backend to live); env `pk_test_` + connected Live only
-      ⇒ the env key; env `pk_live_` + connected Live ⇒ the connected key (the main migration case); env
-      `pk_live_` + connected Test only ⇒ the env key; env `pk_abc…` + connected Test ⇒ the env key
-      (unknown prefix is live); env `mk_test_…` ⇒ test; no env key + both rows ⇒ connected Live; nothing
-      ⇒ the "not connected" error on a call while the provider constructs
+      ⇒ the connected Test key (a connect moves no backend with an env key to live); env `pk_test_` +
+      connected Live only ⇒ the env key; env `pk_live_` + connected Live ⇒ the connected key (the main
+      migration case); env `pk_live_` + connected Test only ⇒ the env key; env `pk_abc…` + connected Test
+      ⇒ the env key (unknown prefix is live); env `mk_test_…` ⇒ test; no env key + both rows ⇒ the rule
+      the user picks (Stage 5); nothing ⇒ the "not connected" error on a call while the provider
+      constructs
 - [ ] write tests for the reader: a cleared cache sees a new row; an uncleared one does not at 29 s and
-      does at 30 s + 1 ms (fake timers); a "relation does not exist" error ⇒ the env key, one warning; a
-      connected key with the `accountId` option set ⇒ the env key, and no `MONEI-Account-ID` header on
-      a connected key; the Apple Pay job with no key ⇒ a warning, no call
+      does at 30 s + 1 ms (fake timers); `fresh` sees a new row and leaves the cache as it was; an error
+      with `code: "42P01"` (the pg error shape) ⇒ the env key, one warning for two calls; another error
+      ⇒ thrown, and the next call queries again; a connected key with the `accountId` option set ⇒ the
+      env key; no `MONEI-Account-ID` header on a connected key; the Apple Pay job with an https
+      `storeCors` and no key ⇒ a warning, no call
 - [ ] write a `tests/module.test.ts` row: `require.resolve` of the module path Medusa builds
       (`medusa-payment-monei/.medusa/server/src/modules/monei-connect`) succeeds after the build
 - [ ] adapt the existing tests to the async client; no behaviour change in them
@@ -416,19 +471,22 @@ plan runs first does this whole task; the other marks it done with the PR links.
 
 **Files:**
 
-- Modify: `src/providers/monei/core/webhook.ts`, `monei-base.ts` (`getWebhookActionAndData`),
-  `src/subscribers/monei-payment-reconcile.ts`, `tests/webhook.test.ts`, `tests/subscribers.test.ts`,
-  `tests/helpers.ts` (a `signV2` helper computed independently of the SDK; `livemode` in the callback
-  fixtures)
+- Modify: `src/providers/monei/core/webhook.ts`, `credentials.ts` (the fresh-read limit),
+  `monei-base.ts` (`getWebhookActionAndData`), `src/subscribers/monei-payment-reconcile.ts`,
+  `tests/webhook.test.ts`, `tests/subscribers.test.ts`, `tests/helpers.ts` (a `signV2` helper computed
+  independently of the SDK; `livemode` in the callback fixtures)
 
-- [ ] `verifyWebhook(credentials, payload)` per the Solution Overview: stored secrets, the reload past the
-      cache, `v1` with an env-key `Monei`, else refused; then the `livemode` check
+- [ ] `verifyWebhook(credentials, payload)` per the Solution Overview: stored secrets, one rate-limited
+      fresh read, `v1` with an env-key `Monei`, else refused with the log rules; then the `livemode`
+      check
 - [ ] the provider and the reconcile subscriber call it with the resolved credentials
 - [ ] write tests: `v2` with the current secret ⇒ fetched; `v2` with a secret two reconnects old ⇒
-      fetched; `v2` with a secret stored after the reader's cache was filled ⇒ fetched (the reload);
-      `v2` with an unknown secret and no env key ⇒ `NOT_SUPPORTED`, no fetch, an error log line; a header
-      with `v1` (env key) and an unknown `v2` ⇒ fetched; `v1` without an env key ⇒ refused; a backend
-      with no key at all ⇒ `NOT_SUPPORTED`, not a throw
+      fetched; `v2` with a secret stored after the reader's cache was filled ⇒ fetched (the fresh read);
+      two forged `v2` within 5 s ⇒ one fresh read; `v2` with an unknown secret and no env key ⇒
+      `NOT_SUPPORTED`, no fetch, an error line naming the id; the same with a body id holding a newline ⇒
+      the id is not logged; a header with `v1` (env key) and an unknown `v2` ⇒ fetched; `v1` without an
+      env key ⇒ refused; an unverified event envelope ⇒ a warning, not an error; a backend with no key at
+      all ⇒ `NOT_SUPPORTED`, not a throw
 - [ ] write `livemode` tests, each for a payment body and for an event envelope: `false` on Live ⇒
       refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒ refused
 - [ ] the reconcile subscriber refuses what the provider refuses (one wiring row)
@@ -443,30 +501,32 @@ plan runs first does this whole task; the other marks it done with the PR links.
   logger)`)
 
 - [ ] `startConnect`: the canonical redirect URI; refuses with `partner` or the problem code before
-      `Connect.start`; deletes rows older than 20 min; stores the row; returns `{url}`; reads
-      `MONEI_CONNECT_BASE_URL`
-- [ ] `completeConnect(code, state)`: `consumeState`, `exchange`, the Live account check, the test call
-      on a fresh client, `upsertCredential` per proven mode, cache clear, Apple Pay; returns the page
-      code
+      `Connect.start`; `deleteOldStates`; stores the row; returns `{url}`; reads `MONEI_CONNECT_BASE_URL`
+- [ ] `completeConnect(code, state)`: `consumeState`, `exchange`, the env Live account check, the test
+      calls on fresh clients, `switchCredentials`, cache clear; returns the page code and an `afterSend`
+      step that registers Apple Pay
 - [ ] write start tests: the URL's `state` equals the stored row's `state`, and
       `base64url(sha256(stored verifier))` equals the URL's `code_challenge`; the answer holds no
-      verifier; `partner` and a `callbackProblem` refuse with no `Connect.start` call and no row; a start
-      deletes rows older than 20 min and keeps a younger one; `MONEI_CONNECT_BASE_URL` sets the URL's
-      base and the exchange's base
-- [ ] write switch tests (each names its bug): a consumed-nothing `state` ⇒ no exchange; a failed
-      exchange or a 200 with only `errors` ⇒ no write, the code returned; a test call of 400 ⇒ switched;
-      401 or 403 ⇒ `keyRejected`; a 5xx, 429 or no answer ⇒ `temporarily_unavailable`, old values kept;
-      the test call goes out with the new key (the mock answers 2xx to the old key and 401 to the new
-      one ⇒ `keyRejected`, nothing stored); Test proven and Live 401 ⇒ Test switched, Live kept; only Test
-      returned ⇒ the Live row unchanged
-- [ ] write account tests: a new Live account other than the connected Live row ⇒ nothing switched, Test
-      included; env Live key whose `getAllowed` answers another `accountId` ⇒ nothing switched; env Live
-      key answering 401 ⇒ switched with a warning; env Live key answering 5xx, or 2xx without
-      `accountId` ⇒ `temporarily_unavailable`, nothing switched; only Test returned with a new Test
-      account ⇒ switched
-- [ ] write effect tests: after `completeConnect`, `loadCredentials` returns the new key at once; Apple
-      Pay registers with the new key; an Apple Pay error keeps the switch; no returned code, page text
-      or log line holds a full key or secret
+      verifier; `partner` and a `callbackProblem` refuse with no `Connect.start` call and no row; the
+      redirect URI is canonical (`https://API.Shop.example:443` ⇒ `https://api.shop.example/monei/connect`);
+      `MONEI_CONNECT_BASE_URL` sets the URL's base and the exchange's base
+- [ ] write switch tests (each names its bug): `consumeState` returning nothing ⇒ `unknownState`, no
+      exchange; `expired` ⇒ `expired`, no exchange; a failed exchange or a 200 with only `errors` ⇒ no
+      `switchCredentials` call, the code returned; a test call of 400 ⇒ switched; 401 or 403 ⇒
+      `keyRejected`; a 5xx, 429 or no answer ⇒ `temporarily_unavailable`, old values kept; the test call
+      goes out with the new key on a fresh client (the per-key mocks answer 2xx to the old key and 401
+      to the new one ⇒ `keyRejected`, nothing stored); a Test result whose `getAllowed` answers
+      `livemode: true` ⇒ `keyRejected`; Test proven and Live 401 ⇒ only Test passed to
+      `switchCredentials`; only Test returned ⇒ the Live row unchanged
+- [ ] write account tests: env Live key whose `getAllowed` answers another `accountId` ⇒ `otherAccount`,
+      nothing switched, Test included; env Live key answering 401 ⇒ switched with a warning; env Live key
+      answering 400, 5xx, or 2xx without `accountId` ⇒ `temporarily_unavailable`, nothing switched; only
+      Test returned with a new Test account ⇒ switched. (The stored-Live check runs inside
+      `switchCredentials`; its unit row uses the store seam: a stored Live row of another account ⇒
+      `otherAccount`.)
+- [ ] write effect tests: after `completeConnect`, `loadCredentials` returns the new key at once; the
+      `afterSend` step registers Apple Pay with the new key; an Apple Pay error keeps the switch; no
+      returned code, page text or logger argument holds a full key or secret
 - [ ] run tests — must pass before next task
 
 ### Task 6: Admin routes and the public callback route
@@ -478,13 +538,13 @@ plan runs first does this whole task; the other marks it done with the PR links.
 - Modify: `src/api/middlewares.ts` (JSON-only on the start)
 
 - [ ] status, start and disconnect per the Solution Overview; the callback route with the `text/plain`
-      page from the code table and both headers
-- [ ] write tests: a start with `text/plain`, `text/plain; x=application/json`,
-      `application/x-www-form-urlencoded`, `multipart/form-data` or no content type ⇒ refused and no row;
-      status with a connected row answers `last4` and holds neither `api_key` nor any secret; disconnect
-      calls `disconnect()` and clears the cache; the callback without `code`, with a broker `error`, or
-      with an unknown `state` ⇒ the error page with both headers and no exchange; `?error=<script>` ⇒
-      the page shows "unknown error" and no markup
+      page from the code table and both headers, and the `afterSend` step after the response
+- [ ] write tests (wiring only; the JSON guard's bypass forms are e2e rows): status with a connected row
+      answers `last4` and holds neither `api_key` nor any secret; status with only an env key holds no key
+      value; status answers `startProblem` `partner` with the option set and the `callbackProblem` code
+      for an `http` `backendUrl`; disconnect calls `disconnect()` and clears the cache; the callback
+      without `code`, with a broker `error`, or with an unknown `state` ⇒ the error page with both
+      headers and no exchange; `?error=<script>` ⇒ the page shows "unknown error" and no markup
 - [ ] run tests — must pass before next task
 
 ### Task 7: Admin Settings page
@@ -493,12 +553,14 @@ plan runs first does this whole task; the other marks it done with the PR links.
 
 - Create: `src/admin/routes/settings/monei/page.tsx`, `src/admin/tsconfig.json` (as the Medusa plugin
   template)
-- Modify: `package.json` (`exports["./admin"]` as the plugin template; `@medusajs/admin-sdk` and
-  `@medusajs/ui` as dev and peer deps), `tests/module.test.ts`
+- Modify: `package.json` (`exports["./admin"]` as the plugin template; `@medusajs/admin-sdk`
+  `>=2.17.0 <3` and `@medusajs/ui` with the range that matches it, as dev deps and optional peers
+  (`peerDependenciesMeta`), so a host with Admin disabled installs nothing new), `tests/module.test.ts`
 
-- [ ] the page per the Solution Overview (blank tab in the click, POST with JSON, then the tab's
+- [ ] the page per the Solution Overview (blank tab in the click, POST `{}` with JSON, then the tab's
       location)
-- [ ] `pnpm build` builds the admin extension; the e2e backend (Admin disabled) still starts
+- [ ] `pnpm build` builds the admin extension; the e2e backend (Admin disabled) still installs and
+      starts, also on the 2.17.0 floor
 - [ ] write a `tests/module.test.ts` row: `medusa-payment-monei/admin` resolves to the built admin entry
       (without it Medusa silently skips the page). No React test setup for one page: the page itself is
       checked by hand (Post-Completion)
@@ -508,14 +570,20 @@ plan runs first does this whole task; the other marks it done with the PR links.
 
 **Files:**
 
-- Create: `e2e/specs/connect.spec.ts`
-- Modify: `e2e/utils/medusa.ts` (a raw request with a chosen content type and a secret API key),
-  `e2e/backend/medusa-config.ts` (`MONEI_API_KEY` optional for the connected spec;
-  `MONEI_CONNECT_BASE_URL`), `e2e/docker-compose.yml`, `e2e/README.md`
+- Create: `e2e/specs/connect.spec.ts`, `e2e/backend/src/scripts/monei-switch.ts` (test-only `medusa
+  exec` script)
+- Modify: `e2e/utils/medusa.ts` (a raw request with a chosen content type, and a secret API key;
+  `restartBackend` takes the env key), `e2e/utils/global-setup.ts` (restore after a crashed connected
+  spec), `e2e/backend/medusa-config.ts` (`MONEI_API_KEY` optional; `MONEI_CONNECT_BASE_URL`),
+  `e2e/docker-compose.yml` (`MONEI_API_KEY: ${E2E_MONEI_API_KEY-${MONEI_TEST_API_KEY}}` or equivalent,
+  `MONEI_CONNECT_BASE_URL` to a refused port), `e2e/README.md`
 
-- [ ] write the specs of the Testing Strategy (ask the user for `MONEI_TEST_API_KEY` first)
-- [ ] the connected-path spec restarts the backend without `MONEI_API_KEY` (as the AUTH fixture does),
-      seeds the connected Test row with psql, pays on the hosted page, then restores the env backend
+- [ ] write the specs of the Testing Strategy (ask the user for `MONEI_TEST_API_KEY` first). psql seeds
+      give an `id` (DML ids have no DB default)
+- [ ] the connected-path spec: a worker fixture (its own timeout, as the AUTH fixture) seeds the
+      connected Test row, restarts the backend without `MONEI_API_KEY`, pays on the hosted page, then
+      deletes the `monei_*` rows and restarts with the env key; a marker file lets global setup restore
+      the backend and delete the rows after a crash
 - [ ] run the full e2e suite — must pass before next task
 
 ### Task 9: Verify acceptance criteria
@@ -529,19 +597,22 @@ plan runs first does this whole task; the other marks it done with the PR links.
 ### Task 10: Update documentation
 
 - [ ] README: "Connect with MONEI" first in Configuration (Admin page, and the admin API with a secret
-      API key for a backend with Admin disabled); the mode rules (the env key sets the mode); `medusa
-      db:migrate` on upgrade; the callback rules; `MONEI_CONNECT_BASE_URL`; the "Use manual keys" cases
-      (http backend, more than 2 path segments, `monei` in the host, partner `accountId`); any admin
-      user can connect (no RBAC policy); CHANGELOG through release-it
+      API key and a `{}` JSON body for a backend with Admin disabled); the mode rules; `medusa
+      db:migrate` on upgrade; the callback rules (account webhooks need the env key); when to revoke old
+      keys or remove `MONEI_API_KEY` (after their open payments settle); `MONEI_CONNECT_BASE_URL`; the
+      "Use manual keys" cases (http backend, more than 2 path segments, `monei` in the host, partner
+      `accountId`); any admin user can connect (no RBAC policy); a new env key of another account does
+      not replace a connected key of the same mode (Disconnect first); CHANGELOG through release-it
 - [ ] `~/Work/MONEI/docs`: the Medusa guide (EN and ES) starts with "Connect with MONEI"; manual keys
       move to an "Advanced" section; a `changelog.mdx` bullet in EN and ES; PR to `master` only
 
 ## Post-Completion
 
-- **Release order** (each step waits for the user): common release → account-service and appsync-service
+- **Already done in Tasks 1-2:** common release, Node SDK release.
+- **Deploy and release order** (each step waits for the user): account-service and appsync-service
   deploys with the new common → authorization-service deploy (broker with `medusa`, switch on) and
-  dashboards → PHP SDK release (Sylius) and Node SDK release → plugin release (npm, minor: a migration)
-  → docs `master` → `prod`.
+  dashboards → PHP SDK release (for Sylius) → plugin release (npm, minor: a migration) → docs `master`
+  → `prod`. A plugin release waits for the broker in prod.
 - **Demo (MONEI/medusa-demo, Medusa 2.23.1, Admin disabled):** connect through the admin API with a
   secret API key. A demo host under `*.monei.com` cannot connect until the separate `moneiHost`
   exemption for MONEI demo hosts ships. Until then, test a real connect on a tunnel host without
@@ -553,7 +624,9 @@ plan runs first does this whole task; the other marks it done with the PR links.
   - reconnect during an open payment: its callback verifies with the older secret;
   - an order made before the connect, with the env key still set, settles by `v1`;
   - the backend with only the env key works as before.
-- **Sylius:** Task 1 is shared; its plan's Task 6 must reference this task's full list (per-client
-  scopes, account-service, cognito-service fixture). Link the PRs in both plans.
-- Not covered (known): a Disconnect while a callback's exchange is still running can store the new key
-  after the Disconnect (the admin sees it on reload and disconnects again).
+- **Sylius:** link the Task 1 PRs in both plans.
+- Not covered (known):
+  - a Disconnect while a callback's exchange is still running can store the new key after the
+    Disconnect (the admin sees it on reload and disconnects again);
+  - env `pk_test_` of account A plus a connected Test key of account B strands A's open test payments
+    (Solution Overview, Callback verify).
