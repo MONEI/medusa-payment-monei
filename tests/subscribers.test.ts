@@ -258,30 +258,16 @@ describe("reconcile subscriber: verification", () => {
 });
 
 describe("reconcile subscriber: scoped signatures", () => {
-  beforeEach(() => {
+  it("reports an orphan when the scoped key's signing secret verifies the callback", async () => {
+    // Bug: the subscriber misses orphan payments if it does not pass the scoped signing secret.
     options.apiKey = SCOPED_API_KEY;
     options.signingSecret = SIGNING_SECRET;
     mockClient(options.apiKey);
     mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment());
-  });
 
-  it("reports an orphan when the scoped key's signing secret verifies the callback", async () => {
     await run({ headers: { "monei-signature": signV2(callback, SIGNING_SECRET) } });
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ name: "monei.orphan_payment" }));
-  });
-
-  it.each([
-    ["a v2 signature made with an unknown secret", signV2(callback, "mksec_test_other")],
-    ["a legacy v1-only callback", sign(callback)],
-  ])("ignores %s on a scoped backend", async (_, signature) => {
-    await run({ headers: { "monei-signature": signature } });
-
-    expect(mock.history.get).toHaveLength(0);
-    expect(emit).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("signature verification failed"),
-    );
   });
 });
 

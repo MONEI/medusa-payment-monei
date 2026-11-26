@@ -113,30 +113,52 @@ describe("validateOptions", () => {
 describe("validateOptions scoped API keys", () => {
   const scoped = { apiKey: SCOPED_API_KEY, backendUrl: "https://shop.test" };
 
-  it("refuses to start with a scoped key whose callbacks cannot be verified", () => {
-    expect(() => validateOptions(scoped)).toThrowError(
+  it.each([
+    ["a scoped key", SCOPED_API_KEY],
+    ["an uppercase MK_ prefix", SCOPED_API_KEY.replace(/^mk_/, "MK_")],
+    ["a Bearer-prefixed scoped key", `Bearer ${SCOPED_API_KEY}`],
+  ])("requires a signing secret for %s", (_, apiKey) => {
+    // Bug: skipping scoped-key detection lets the backend start with no way to verify v2.
+    expect(() => validateOptions({ ...scoped, apiKey })).toThrowError(
       /^Option `signingSecret` is required with a scoped MONEI API key$/,
     );
   });
 
   it.each([
     ["a secret with the wrong prefix", "whsec_test_x"],
-    ["an empty secret", ""],
+    ["a bare mksec_ prefix", "mksec_"],
     ["an empty rotation list", []],
+    ["a rotation list with a blank secret", [SIGNING_SECRET, " \n"]],
     ["a rotation list with an invalid old secret", [SIGNING_SECRET, "whsec_test_old"]],
   ])("refuses %s without leaking credentials", (_, signingSecret) => {
+    // Bug: an invalid secret leaves callbacks unverifiable and may leak in a startup error.
     expect(() => validateOptions({ ...scoped, signingSecret })).toThrowError(
       /^Option `signingSecret` must contain one or more `mksec_` secrets$/,
     );
   });
 
+  it.each(["", " \n"])("treats a blank signingSecret or accountId as unset (%j)", (blank) => {
+    // Bug: blank env vars make legacy signing or scoped account validation fail at startup.
+    expect(
+      validateOptions({ ...scoped, apiKey: API_KEY, signingSecret: blank, accountId: blank }),
+    ).toMatchObject({ signingSecret: undefined, accountId: undefined });
+    expect(
+      validateOptions({ ...scoped, signingSecret: SIGNING_SECRET, accountId: blank }).accountId,
+    ).toBeUndefined();
+    expect(() => validateOptions({ ...scoped, signingSecret: blank })).toThrowError(
+      /^Option `signingSecret` is required with a scoped MONEI API key$/,
+    );
+  });
+
   it("refuses a signing secret for a legacy key without leaking credentials", () => {
+    // Bug: a legacy key accepts a signing secret even though its payment callbacks only carry v1.
     expect(() =>
       validateOptions({ ...scoped, apiKey: API_KEY, signingSecret: SIGNING_SECRET }),
     ).toThrowError(/^Option `signingSecret` requires a scoped MONEI API key$/);
   });
 
   it("refuses to use a scoped key to act for another account", () => {
+    // Bug: a scoped key sends a partner account header that MONEI refuses.
     expect(() =>
       validateOptions({ ...scoped, signingSecret: SIGNING_SECRET, accountId: "acc_1" }),
     ).toThrowError(/^Option `accountId` cannot be used with a scoped MONEI API key$/);

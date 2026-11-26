@@ -104,9 +104,9 @@ options: {
 },
 ```
 
-To rotate a scoped key, set `MONEI_API_KEY` to the new key. Set `signingSecret` to `[newSecret, oldSecret]` in that order. Revoke the old key and remove its secret after its open payments settle. Revoking it early removes the `v2` signature from callbacks for those payments.
+To rotate a scoped key, deploy `signingSecret: [newSecret, oldSecret]` to every instance and worker before the new key creates any payment. Then set `MONEI_API_KEY` to the new key. Keep the old key and its secret until its payments settle and their callbacks have been processed. Then revoke the old key and remove its secret. Revoking it early removes `v2` from its callbacks.
 
-Before switching from a `pk_` key, wait for open Multibanco and MB WAY payments to settle. Callbacks for payments made with a `pk_` key have no `v2` signature and are refused after the switch. Card, Bizum and PayPal payments can also complete through the storefront return.
+Before switching from a `pk_` key, wait for all open card, Bizum, PayPal, Multibanco and MB WAY payments to settle. Their callbacks have no `v2` signature, so the plugin refuses them after the switch.
 
 With a scoped key, the plugin refuses dashboard webhooks because they use their own signing secret. Capture and cancel from the Medusa Admin so the changes reach Medusa.
 
@@ -177,6 +177,8 @@ The plugin verifies the `MONEI-Signature` header against the raw callback body.
 - **An account-webhook event** (`{id, type, objectType, objectId, object}`), from a webhook in the MONEI dashboard. The plugin accepts these events with a `pk_` key and verifies `v1`. It uses only `charge` events and fetches the payment `objectId`. `object.id` must be the same id. It ignores events for other objects, such as subscriptions.
 
 In both formats the body is only a pointer. The plugin fetches the payment from MONEI and uses its status. You do not need a dashboard webhook.
+
+If MONEI cannot read a key's signing secret, it sends a callback without `v2`, which a scoped backend refuses. Checkout can still complete through the storefront return. Check the MONEI dashboard for payments that stay open.
 
 ## How it works
 

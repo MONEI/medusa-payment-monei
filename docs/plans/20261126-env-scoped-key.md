@@ -57,12 +57,15 @@ Trello: https://trello.com/c/xaRD0Pxs
 ## Solution Overview
 
 - **Options:**
-  - `apiKey`: a `pk_` key (as today) or an `mk_` key.
-  - `signingSecret`: a string or an array of strings, each starting with `mksec_`. Required with an
-    `mk_` key (without it no callback can verify); refused with a `pk_` key (its callbacks carry no
-    `v2`). Several secrets serve a key rotation: list the new key's secret first and keep the old one
-    until the old key's open payments settle.
-  - `accountId` with an `mk_` key is refused at startup (a scoped key cannot act for another account).
+  - `apiKey`: a `pk_` key (as today) or a scoped key. Startup and callback verification recognize
+    the `mk_` prefix case-insensitively, with an optional `Bearer ` prefix. The SDK uses the
+    trimmed key as supplied.
+  - `signingSecret`: a string or an array of strings. Trim each value. A blank string counts as
+    unset. An empty array, blank array entry, or prefix without a value is invalid. Each secret
+    must start with `mksec_`. Scoped keys require a secret and `pk_` keys refuse one. For rotation,
+    list the new secret first.
+  - `accountId`: trim the string and treat a blank value as unset. Scoped keys refuse a set
+    `accountId` at startup because they cannot act for another account.
   - Errors never print a key or secret value.
 - **Callback verify** (`verifyWebhook(client, options, payload)`):
   - `pk_` key: `v1` with the key, as today.
@@ -72,11 +75,14 @@ Trello: https://trello.com/c/xaRD0Pxs
 - **Limits of an `mk_` setup (README):**
   - account-webhook events (dashboard webhooks) cannot be verified, so a capture or cancel made in the
     MONEI dashboard does not reach Medusa; capture and cancel from the Medusa admin;
-  - switching from `pk_` to `mk_` while payments are open: their callbacks carry no `v2` and are
-    refused; switch when no Multibanco or MB WAY payment is open (card, Bizum and PayPal also complete
-    through the storefront return);
-  - revoking the old `mk_` key during a rotation removes the `v2` of its open payments' callbacks:
-    revoke after they settle.
+  - Before switching from `pk_` to `mk_`, wait for all open card, Bizum, PayPal, Multibanco and
+    MB WAY payments to settle. Callbacks for these payments carry no `v2` and are refused after
+    the switch.
+  - For rotation, deploy both secrets to every instance and worker before the new key creates
+    any payments. Revoke the old key and remove its secret after its payments settle and their
+    callbacks have been processed.
+  - If MONEI cannot read the signing secret, the callback carries no `v2` and is refused. The
+    storefront return can still complete checkout. Check the MONEI dashboard for open payments.
 
 ## What Goes Where
 
@@ -97,20 +103,19 @@ Trello: https://trello.com/c/xaRD0Pxs
 - [x] `signingSecret` option and the startup rules of the Solution Overview in `validateOptions`
 - [x] `verifyWebhook` per the Solution Overview; the provider and the reconcile subscriber pass the
       options
-- [x] write `validateOptions` tests: an `mk_` key without `signingSecret` ⇒ refused; a secret without
-      the `mksec_` prefix, an empty string or an empty array ⇒ refused; `signingSecret` with a `pk_` key
-      ⇒ refused; `accountId` with an `mk_` key ⇒ refused; no error message holds the key or secret
-      value; a `pk_` setup without `signingSecret` ⇒ accepted as today
+- [x] write `validateOptions` tests: a scoped key without `signingSecret` is refused, including
+      uppercase and `Bearer ` forms. Blank options count as unset. An invalid secret or empty
+      rotation list is refused, with no credentials in errors. A scoped key refuses a set
+      `accountId`. A `pk_` key requires `signingSecret` to be unset.
 - [x] write verify tests: an `mk_` backend and a `v2` signed with the configured secret ⇒ fetched; a
       `v2` signed with the second listed secret ⇒ fetched (rotation); a `v2` with an unknown secret ⇒
-      refused, no fetch; a `v1`-only callback on an `mk_` backend ⇒ refused, no fetch; a `pk_` backend
-      keeps verifying `v1` (the existing rows stay green); the reconcile subscriber refuses what the
-      provider refuses
+      refused, no fetch; matching `v1` with invalid `v2` on an `mk_` backend ⇒ refused, no fetch;
+      a `pk_` backend keeps verifying `v1`; the reconcile subscriber accepts a valid scoped callback
 - [x] run `pnpm test` and `pnpm exec vp check` — must pass before next task
 
 ### Task 2: Verify acceptance criteria
 
-- [x] every Solution Overview rule has a test; the `pk_` regression rows pass unchanged
+- [x] test startup validation and callback verification; the `pk_` regression rows pass unchanged
 - [x] run `pnpm test` and `pnpm exec vp check`
 
 ### Task 3: Update documentation
