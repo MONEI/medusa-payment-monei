@@ -1,8 +1,10 @@
 // Helpers for routes and subscribers, which cannot resolve the provider itself.
-import type { MedusaContainer } from "@medusajs/framework/types";
+import type { Knex } from "@medusajs/framework/mikro-orm/knex";
+import type { Logger, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import type { Monei } from "@monei-js/node-sdk";
-import { createMoneiClient, getMoneiOptions } from "./client";
+import { createMoneiClient, getMoneiOptions, MoneiNotConnectedError } from "./client";
+import { type Credentials, loadCredentials } from "./credentials";
 import { CARD_PROVIDER_ID, moneiCustomerIdOf } from "./ids";
 
 export type Query = {
@@ -17,17 +19,29 @@ export function query(scope: MedusaContainer): Query {
   return scope.resolve<Query>(ContainerRegistrationKeys.QUERY);
 }
 
-/** One client per loaded config: the options never change while it is loaded. */
-const clients = new WeakMap<object, Monei>();
+const clients = new WeakMap<object, { apiKey: string; accountId?: string; client: Monei }>();
 
-export function moneiClient(scope: MedusaContainer): Monei {
-  const config = scope.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
-  let client = clients.get(config);
-  if (!client) {
-    client = createMoneiClient(getMoneiOptions(scope));
-    clients.set(config, client);
+export function clientForCredentials(owner: object, credentials: Credentials): Monei {
+  const { apiKey } = credentials;
+  if (!apiKey) throw new MoneiNotConnectedError();
+  const accountId = credentials.source === "env" ? credentials.accountId : undefined;
+  const cached = clients.get(owner);
+  if (cached?.apiKey === apiKey && cached.accountId === accountId) {
+    return cached.client;
   }
+  const client = createMoneiClient({ apiKey, accountId });
+  clients.set(owner, { apiKey, accountId, client });
   return client;
+}
+
+export async function moneiClient(scope: MedusaContainer): Promise<Monei> {
+  const config = scope.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
+  const credentials = await loadCredentials(
+    scope.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION),
+    getMoneiOptions(scope),
+    scope.resolve<Logger>(ContainerRegistrationKeys.LOGGER),
+  );
+  return clientForCredentials(config, credentials);
 }
 
 /**

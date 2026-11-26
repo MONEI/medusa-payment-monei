@@ -1,6 +1,7 @@
 import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import reconcile, { config } from "../src/subscribers/monei-payment-reconcile";
 import { API_KEY, fakeGraph, sign } from "./helpers";
 
@@ -72,6 +73,8 @@ let emit: ReturnType<typeof vi.fn>;
 let deleteAccountHolder: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let container: { resolve: (key: string) => unknown };
+
+beforeEach(clearCredentialsCache);
 
 beforeEach(() => {
   const client = new Monei(API_KEY);

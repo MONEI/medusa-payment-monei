@@ -1,5 +1,5 @@
 export type MoneiOptions = {
-  apiKey: string;
+  apiKey?: string;
   /** Partner accounts only: the merchant account to act for. */
   accountId?: string;
   /**
@@ -15,3 +15,6 @@ export type MoneiOptions = {
    */
   releaseUnorderedHoldsAfterMinutes?: number;
 };
+
+export const MONEI_MODES = ["live", "test"] as const;
+export type MoneiMode = (typeof MONEI_MODES)[number];

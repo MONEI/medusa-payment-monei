@@ -2,7 +2,8 @@ import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative, sep } from "node:path";
 import MockAdapter from "axios-mock-adapter";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import MoneiBizumService from "../src/providers/monei/services/monei-bizum";
 import MoneiCardService from "../src/providers/monei/services/monei-card";
 import MoneiMbwayService from "../src/providers/monei/services/monei-mbway";
@@ -14,7 +15,19 @@ const root = join(__dirname, "..");
 const serverDir = join(root, ".medusa", "server");
 const require = createRequire(__filename);
 
+beforeEach(clearCredentialsCache);
+
 describe("plugin package", () => {
+  it("exports the built module path that Medusa discovers in a plugin", () => {
+    const entry = require.resolve("medusa-payment-monei/.medusa/server/src/modules/monei-connect");
+    expect(relative(root, entry)).toBe(
+      join(".medusa", "server", "src", "modules", "monei-connect", "index.js"),
+    );
+    expect(require(entry).default.service.prototype.__joinerConfig().serviceName).toBe(
+      "monei_connect",
+    );
+  });
+
   it("resolves the provider entry through package exports with all five services", () => {
     // Bugs: an `exports` path that does not match the plugin:build layout makes
     // `resolve: "medusa-payment-monei/providers/monei"` fail in the host app; a
@@ -71,7 +84,7 @@ describe("payment method providers", () => {
         { logger: { warn: vi.fn(), info: vi.fn() } },
         { apiKey: "pk_test_x", backendUrl: "https://shop.test", capture: false },
       );
-      const mock = new MockAdapter(provider["client_"].client);
+      const mock = new MockAdapter((await provider["client"]()).client);
       mock.onPost("https://api.monei.com/v1/payments").reply(200, {
         id: "pay_1",
         amount: 1999,

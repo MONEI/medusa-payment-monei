@@ -52,7 +52,6 @@ describe("User-Agent", () => {
     const client = createMoneiClient({
       apiKey: "pk_test_x",
       accountId: "acc_1",
-      backendUrl: "https://shop.test",
     });
     const headers = client.client.defaults.headers.common;
 
@@ -64,8 +63,8 @@ describe("User-Agent", () => {
 });
 
 describe("validateOptions", () => {
-  it("rejects a missing apiKey", () => {
-    expect(() => validateOptions({ backendUrl: "https://shop.test" })).toThrow("apiKey");
+  it("allows the backend to configure MONEI before its first connection", () => {
+    expect(validateOptions({ backendUrl: "https://shop.test" }).apiKey).toBeUndefined();
   });
 
   it("rejects a non-boolean capture", () => {
@@ -79,14 +78,14 @@ describe("validateOptions", () => {
     ).toThrow("`capture` must be a boolean");
   });
 
-  it("trims the apiKey and rejects a blank one", () => {
+  it("trims pasted keys and treats blank keys as absent", () => {
     // Bug: a trailing newline from a secrets file makes MONEI refuse every call.
     expect(
       validateOptions({ apiKey: " pk_test_x\n", backendUrl: "https://shop.test" }).apiKey,
     ).toBe("pk_test_x");
-    expect(() => validateOptions({ apiKey: "  ", backendUrl: "https://shop.test" })).toThrow(
-      "apiKey",
-    );
+    expect(
+      validateOptions({ apiKey: "  ", backendUrl: "https://shop.test" }).apiKey,
+    ).toBeUndefined();
   });
 
   it("rejects a relative backendUrl", () => {

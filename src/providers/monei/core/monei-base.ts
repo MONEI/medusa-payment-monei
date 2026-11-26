@@ -1,3 +1,4 @@
+import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type {
   AuthorizePaymentInput,
   BigNumberInput,
@@ -27,6 +28,7 @@ import type {
 } from "@medusajs/framework/types";
 import {
   AbstractPaymentProvider,
+  ContainerRegistrationKeys,
   MedusaError,
   PaymentActions,
   PaymentSessionStatus,
@@ -50,9 +52,11 @@ import {
   toSessionStatus,
   toWebhookAction,
 } from "../utils/status";
-import { createMoneiClient, validateOptions } from "./client";
+import { validateOptions } from "./client";
+import { loadCredentials } from "./credentials";
 import { callMonei, isClientError, toMedusaError } from "./errors";
 import { PROVIDER_ID, sessionIdOf } from "./ids";
+import { clientForCredentials } from "./scope";
 import { verifyWebhook } from "./webhook";
 
 /** The keys every payment provider method returns in `data`; the store cart API exposes them. */
@@ -198,7 +202,6 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   protected abstract readonly authAllowed: boolean;
 
   protected readonly options_: MoneiOptions;
-  protected readonly client_: Monei;
   protected readonly logger_: Logger;
 
   static validateOptions(options: Record<string, unknown>): void {
@@ -208,8 +211,16 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   constructor(cradle: Record<string, unknown>, options: MoneiOptions) {
     super(cradle, options);
     this.options_ = validateOptions(options);
-    this.client_ = createMoneiClient(this.options_);
     this.logger_ = cradle.logger as Logger;
+  }
+
+  protected async client(): Promise<Monei> {
+    const credentials = await loadCredentials(
+      this.container[ContainerRegistrationKeys.PG_CONNECTION] as Knex,
+      this.options_,
+      this.logger_,
+    );
+    return clientForCredentials(this, credentials);
   }
 
   protected call<T>(action: string, fn: () => Promise<T>): Promise<T> {
@@ -217,7 +228,10 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   }
 
   /** The MONEI customer of the session; only the card provider has account holders. */
-  protected async resolveCustomer(_context?: PaymentProviderContext): Promise<ResolvedCustomer> {
+  protected async resolveCustomer(
+    _client: Monei,
+    _context?: PaymentProviderContext,
+  ): Promise<ResolvedCustomer> {
     return { missing: false };
   }
 
@@ -238,12 +252,16 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     };
   }
 
-  protected async fetchPayment(data: Record<string, unknown> | undefined): Promise<Payment> {
+  protected async fetchPayment(
+    data: Record<string, unknown> | undefined,
+    client?: Monei,
+  ): Promise<Payment> {
     const id = data?.id;
     if (typeof id !== "string" || !id) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "MONEI payment id is missing");
     }
-    return this.call("get payment", () => this.client_.payments.get(id));
+    const monei = client ?? (await this.client());
+    return this.call("get payment", () => monei.payments.get(id));
   }
 
   async initiatePayment({
@@ -273,7 +291,8 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     }
 
     const country = billingCountry(data?.billing_country);
-    const customer = await this.resolveCustomer(context);
+    const client = await this.client();
+    const customer = await this.resolveCustomer(client, context);
     const saveCard = data?.save_card === true;
     if (saveCard && !customer.customerId) {
       this.logger_.warn(
@@ -308,7 +327,7 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       ...customerFields(context?.customer, country),
     };
 
-    const payment = await this.call("create payment", () => this.client_.payments.create(request));
+    const payment = await this.call("create payment", () => client.payments.create(request));
 
     return {
       id: payment.id,
@@ -355,8 +374,9 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     }
     let status: string | undefined;
     let amount: string | undefined;
+    const client = await this.client();
     try {
-      const payment = await this.client_.payments.get(id);
+      const payment = await client.payments.get(id);
       // Core passes only `data`, never the deleted session's id, and `data` may not come
       // from this provider: cancel only a payment that belongs to the named session.
       if (payment.orderId !== sessionId) {
@@ -385,7 +405,7 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
           `MONEI deletePayment: payment ${id} of ${amount} is SUCCEEDED but its session ${sessionId} was deleted; refund it in the MONEI dashboard if no order was created`,
         );
       } else if (CANCELABLE.has(payment.status)) {
-        await this.client_.payments.cancel(id, {
+        await client.payments.cancel(id, {
           cancellationReason: PaymentCancellationReason.REQUESTED_BY_CUSTOMER,
         });
       }
@@ -471,18 +491,19 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   }
 
   async capturePayment({ data }: CapturePaymentInput): Promise<CapturePaymentOutput> {
-    const payment = await this.fetchPayment(data);
+    const client = await this.client();
+    const payment = await this.fetchPayment(data, client);
     if (payment.status === PaymentStatus.SUCCEEDED) {
       return { data: this.toSessionData(payment, data) };
     }
     let captured: Payment;
     try {
       // Medusa passes no amount: always a full capture.
-      captured = await this.client_.payments.capture(payment.id);
+      captured = await client.payments.capture(payment.id);
     } catch (error) {
       if (isClientError(error)) throw toMedusaError(error, "capture payment");
       // Safe to re-fetch once: the capture flips the status, and MONEI refuses a second capture.
-      const current = await this.client_.payments.get(payment.id).catch(() => undefined);
+      const current = await client.payments.get(payment.id).catch(() => undefined);
       if (current?.status !== PaymentStatus.SUCCEEDED) {
         throw new MedusaError(
           MedusaError.Types.UNEXPECTED_STATE,
@@ -495,7 +516,8 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   }
 
   async cancelPayment({ data }: CancelPaymentInput): Promise<CancelPaymentOutput> {
-    const payment = await this.fetchPayment(data);
+    const client = await this.client();
+    const payment = await this.fetchPayment(data, client);
     if (ALREADY_VOID.has(payment.status)) {
       return { data: this.toSessionData(payment, data) };
     }
@@ -509,7 +531,7 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       );
     }
     const canceled = await this.call("cancel payment", () =>
-      this.client_.payments.cancel(payment.id, {
+      client.payments.cancel(payment.id, {
         cancellationReason: PaymentCancellationReason.REQUESTED_BY_CUSTOMER,
       }),
     );
@@ -521,14 +543,15 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "MONEI payment currency is missing");
     }
     const minor = toMinorUnits(amount, data.currency);
-    const payment = await this.fetchPayment(data);
+    const client = await this.client();
+    const payment = await this.fetchPayment(data, client);
     const baseline = payment.refundedAmount ?? 0;
 
     const sentAt = new Date().toISOString();
     let refunded: Payment;
     let outcome = "ok";
     try {
-      refunded = await this.client_.payments.refund(payment.id, { amount: minor.amount });
+      refunded = await client.payments.refund(payment.id, { amount: minor.amount });
     } catch (error) {
       const refused = isClientError(error);
       outcome = refused ? "error" : "no_answer";
@@ -570,12 +593,13 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       return { action: PaymentActions.NOT_SUPPORTED };
     };
 
-    const verified = verifyWebhook(this.client_, payload);
+    const client = await this.client();
+    const verified = verifyWebhook(client, payload);
     if ("refused" in verified) return notSupported(verified.refused);
     const id = verified.paymentId;
 
     // A throw lets the event bus retry; a dropped paid callback would leave the cart open.
-    const payment = await this.call("get payment", () => this.client_.payments.get(id));
+    const payment = await this.call("get payment", () => client.payments.get(id));
     const sessionId = sessionIdOf(payment.orderId);
     if (!sessionId) {
       return notSupported(

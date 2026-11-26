@@ -40,7 +40,7 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
     throw new MedusaError(MedusaError.Types.NOT_FOUND, "Payment method not found");
   }
 
-  const client = moneiClient(req.scope);
+  const client = await moneiClient(req.scope);
   const paymentId = sessionPaymentId(session);
   const payment = await callMonei("get payment", () => client.payments.get(paymentId));
   // MONEI checks a token against the customer only when the payment has one. The

@@ -10,7 +10,7 @@ import type {
   PaymentProviderContext,
 } from "@medusajs/framework/types";
 import { MedusaError } from "@medusajs/framework/utils";
-import type { CreateCustomerRequest } from "@monei-js/node-sdk";
+import type { CreateCustomerRequest, Monei } from "@monei-js/node-sdk";
 import { isNotFound, toMedusaError } from "../core/errors";
 import { CARD_IDENTIFIER, moneiCustomerIdOf, opaqueId } from "../core/ids";
 import { MoneiBase, type ResolvedCustomer } from "../core/monei-base";
@@ -22,12 +22,13 @@ export default class MoneiCardService extends MoneiBase {
   protected readonly authAllowed = true;
 
   protected override async resolveCustomer(
+    client: Monei,
     context?: PaymentProviderContext,
   ): Promise<ResolvedCustomer> {
     const id = moneiCustomerIdOf(context?.account_holder);
     if (!id) return { missing: false };
     try {
-      await this.client_.customers.get(id);
+      await client.customers.get(id);
       return { customerId: id, missing: false };
     } catch (error) {
       // Any other error throws: an outage must not drop the customer from the payment.
@@ -55,8 +56,9 @@ export default class MoneiCardService extends MoneiBase {
       name: fullName(customer.first_name, customer.last_name),
       phone: customer.phone,
     }) as CreateCustomerRequest | undefined;
+    const client = await this.client();
     const created = await this.call("create customer", () =>
-      this.client_.customers.create(request ?? {}),
+      client.customers.create(request ?? {}),
     );
     return { id: created.id, data: { id: created.id } };
   }
@@ -68,8 +70,9 @@ export default class MoneiCardService extends MoneiBase {
     if (!id) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "MONEI customer id is missing");
     }
+    const client = await this.client();
     try {
-      await this.client_.customers.delete(id);
+      await client.customers.delete(id);
     } catch (error) {
       // Medusa deletes its row before this call, so a customer already gone is done.
       if (!isNotFound(error)) throw toMedusaError(error, "delete customer");
@@ -82,8 +85,9 @@ export default class MoneiCardService extends MoneiBase {
   }: ListPaymentMethodsInput): Promise<ListPaymentMethodsOutput> {
     const id = moneiCustomerIdOf(context?.account_holder);
     if (!id) return [];
+    const client = await this.client();
     const methods = await this.call("list payment methods", () =>
-      this.client_.customers.listPaymentMethods(id),
+      client.customers.listPaymentMethods(id),
     );
     // The token is a permanent credential: return the opaque id of the store routes.
     return methods.map((method) => ({
@@ -108,13 +112,14 @@ export default class MoneiCardService extends MoneiBase {
         "MONEI customer id or payment method id is missing",
       );
     }
+    const client = await this.client();
     const methods = await this.call("list payment methods", () =>
-      this.client_.customers.listPaymentMethods(id),
+      client.customers.listPaymentMethods(id),
     );
     const method = methods.find((candidate) => opaqueId(candidate.id) === data.id);
     if (!method) throw new MedusaError(MedusaError.Types.NOT_FOUND, "Payment method not found");
     await this.call("delete payment method", () =>
-      this.client_.customers.deletePaymentMethod(id, method.id),
+      client.customers.deletePaymentMethod(id, method.id),
     );
     return {};
   }

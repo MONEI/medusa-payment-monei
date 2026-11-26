@@ -1,5 +1,6 @@
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import MoneiCardService from "../src/providers/monei/services/monei-card";
 import { moneiError } from "./helpers";
 
@@ -18,13 +19,14 @@ let logger: { warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
 let provider: MoneiCardService;
 let mock: MockAdapter;
 
-beforeEach(() => {
+beforeEach(async () => {
+  clearCredentialsCache();
   logger = { warn: vi.fn(), info: vi.fn() };
   provider = new MoneiCardService(
     { logger },
     { apiKey: "pk_test_x", backendUrl: "https://shop.test" },
   );
-  mock = new MockAdapter(provider["client_"].client);
+  mock = new MockAdapter((await provider["client"]()).client);
 });
 
 const initiateWithHolder = (data: Record<string, unknown> = {}) =>

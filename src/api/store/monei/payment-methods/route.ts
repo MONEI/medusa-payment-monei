@@ -7,7 +7,8 @@ export const GET = async (req: AuthenticatedMedusaRequest, res: MedusaResponse) 
   const customerId = requireCustomerId(req);
   // Every card holder: the confirm route pays with a card of whichever one the session used.
   const moneiCustomerIds = await findMoneiCustomerIds(req.scope, customerId);
-  const cards = await listShopperCards(moneiClient(req.scope), moneiCustomerIds);
+  const client = await moneiClient(req.scope);
+  const cards = await listShopperCards(client, moneiCustomerIds);
   res.json({
     payment_methods: cards.map(({ card }) => ({
       id: opaqueId(card.id),

@@ -1,6 +1,7 @@
 import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import registerDomains, { storefrontDomains } from "../src/jobs/monei-apple-pay-domains";
 import { API_KEY } from "./helpers";
 
@@ -47,6 +48,7 @@ describe("Apple Pay domain job", () => {
     } as never);
 
   beforeEach(() => {
+    clearCredentialsCache();
     const client = new Monei(API_KEY);
     shared.client = client;
     mock = new MockAdapter(client.client);

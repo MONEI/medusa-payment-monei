@@ -25,9 +25,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   const paymentId = sessionPaymentId(session);
-  const payment = await callMonei("get payment", () =>
-    moneiClient(req.scope).payments.get(paymentId),
-  );
+  const client = await moneiClient(req.scope);
+  const payment = await callMonei("get payment", () => client.payments.get(paymentId));
   if (payment.orderId !== session.id) {
     throw new MedusaError(
       MedusaError.Types.FORBIDDEN,

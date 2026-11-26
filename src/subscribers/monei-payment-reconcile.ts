@@ -113,7 +113,7 @@ export default async function moneiPaymentReconcile({
   if (!isMoneiProvider(providerId)) return;
 
   const logger = container.resolve<Logger>(ContainerRegistrationKeys.LOGGER);
-  const client = moneiClient(container);
+  const client = await moneiClient(container);
   // The core subscriber may already have rebuilt `rawData` on this shared event object.
   const verified = verifyWebhook(client, event.data.payload ?? {});
   if ("refused" in verified) {

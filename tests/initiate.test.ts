@@ -1,6 +1,7 @@
 import type { InitiatePaymentInput } from "@medusajs/framework/types";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import { moneiError, TestProvider } from "./helpers";
 
 const PAYMENTS = "https://api.monei.com/v1/payments";
@@ -20,7 +21,8 @@ let provider: TestProvider;
 let mock: MockAdapter;
 let paymentSessionService: { list: ReturnType<typeof vi.fn> };
 
-beforeEach(() => {
+beforeEach(async () => {
+  clearCredentialsCache();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   // The session row as the payment module stores it: not yet authorized.
   paymentSessionService = {
@@ -32,7 +34,7 @@ beforeEach(() => {
     { logger, paymentSessionService },
     { apiKey: "pk_test_x", backendUrl: "https://shop.test/medusa/" },
   );
-  mock = new MockAdapter(provider["client_"].client);
+  mock = new MockAdapter((await provider["client"]()).client);
 });
 
 const initiate = (input: Partial<InitiatePaymentInput> = {}) =>
@@ -111,7 +113,7 @@ describe("initiatePayment", () => {
       { logger },
       { apiKey: "pk_test_x", backendUrl: "https://shop.test", capture: false },
     );
-    mock = new MockAdapter(authProvider["client_"].client);
+    mock = new MockAdapter((await authProvider["client"]()).client);
     mock.onPost(PAYMENTS).reply(200, createdPayment);
 
     await authProvider.initiatePayment({

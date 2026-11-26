@@ -11,7 +11,7 @@
     "@medusajs/cli": "2.22.3",
     "@medusajs/framework": "2.22.3",
     "@medusajs/medusa": "2.22.3",
-    "@monei-js/node-sdk": "3.3.0"
+    "@monei-js/node-sdk": "3.6.0"
   },
   "devDependencies": {
     "@swc/core": "1.16.21",

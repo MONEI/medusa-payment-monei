@@ -1,5 +1,6 @@
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import { API_KEY, hmac, sign, T, TestProvider } from "./helpers";
 
 const SESSION_ID = "payses_01";
@@ -24,7 +25,8 @@ let provider: TestProvider;
 let mock: MockAdapter;
 let paymentSessionService: { list: ReturnType<typeof vi.fn> };
 
-beforeEach(() => {
+beforeEach(async () => {
+  clearCredentialsCache();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   // Only SESSION_ID exists in Medusa.
   paymentSessionService = {
@@ -34,7 +36,7 @@ beforeEach(() => {
     { logger, paymentSessionService },
     { apiKey: API_KEY, backendUrl: "https://shop.test" },
   );
-  mock = new MockAdapter(provider["client_"].client);
+  mock = new MockAdapter((await provider["client"]()).client);
   mock.onGet(PAYMENT).reply(200, fetched());
 });
 

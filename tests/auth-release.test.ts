@@ -1,6 +1,7 @@
 import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import { validateOptions } from "../src/providers/monei/core/client";
 import release, { config } from "../src/subscribers/monei-hold-release";
 import reconcile, { config as reconcileConfig } from "../src/subscribers/monei-payment-reconcile";
@@ -32,6 +33,8 @@ let lockRelease: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let providerOptions: Record<string, unknown>;
 let container: { resolve: (key: string) => unknown };
+
+beforeEach(clearCredentialsCache);
 
 beforeEach(() => {
   const client = new Monei(API_KEY);

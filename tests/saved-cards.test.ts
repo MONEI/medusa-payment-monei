@@ -2,6 +2,7 @@ import { getHttpResponseFromError } from "@medusajs/framework/http";
 import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import middlewares, {
   refusePartialMoneiCapture,
   refuseReservedMoneiSessionData,
@@ -117,6 +118,8 @@ let mock: MockAdapter;
 let graph: ReturnType<typeof vi.fn>;
 let scope: { resolve: (key: string) => unknown };
 let bodies: unknown[];
+
+beforeEach(clearCredentialsCache);
 
 beforeEach(() => {
   const client = new Monei("pk_test_x");

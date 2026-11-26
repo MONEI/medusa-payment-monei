@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { ConfigModule, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { Monei } from "@monei-js/node-sdk";
 import type { MoneiOptions } from "../types";
 import { PROVIDER_ID } from "./ids";
@@ -18,11 +18,9 @@ const DEFAULT_RELEASE_HOLDS_AFTER_MINUTES = 30;
  */
 const MAX_RELEASE_HOLDS_AFTER_MINUTES = 10_080;
 
-export function validateOptions(options: Partial<MoneiOptions> | undefined): MoneiOptions {
-  const apiKey = typeof options?.apiKey === "string" ? options.apiKey.trim() : undefined;
-  if (!options || !apiKey) {
-    throw new Error("Required option `apiKey` is missing in the MONEI payment provider");
-  }
+export function validateOptions(options: Partial<MoneiOptions> = {}): MoneiOptions {
+  const apiKey =
+    typeof options.apiKey === "string" ? options.apiKey.trim() || undefined : undefined;
   // MEDUSA_BACKEND_URL is the variable Medusa's docs use for the backend URL (the
   // default of `admin.backendUrl`); the server does not know its public URL itself.
   const backendUrl = options.backendUrl || process.env.MEDUSA_BACKEND_URL?.trim();
@@ -122,7 +120,16 @@ export function getUserAgent(): string {
   return userAgent;
 }
 
-export function createMoneiClient(options: MoneiOptions): Monei {
+export class MoneiNotConnectedError extends MedusaError {
+  constructor() {
+    super(
+      MedusaError.Types.NOT_ALLOWED,
+      "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY",
+    );
+  }
+}
+
+export function createMoneiClient(options: { apiKey: string; accountId?: string }): Monei {
   const monei = new Monei(options.apiKey, {
     accountId: options.accountId,
     userAgent: getUserAgent(),

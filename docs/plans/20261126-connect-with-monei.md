@@ -547,23 +547,23 @@ default.
   `src/api/store/monei/*` (await the client), `tests/module.test.ts`, the tests that reach `client_` or
   mock `createMoneiClient`
 
-- [ ] module `monei_connect` with the three models, the unique indexes, and the custom service methods
+- [x] module `monei_connect` with the three models, the unique indexes, and the custom service methods
       `createState`, `consumeState`, `deleteOldStates`, `switchCredentials`, `setMode`, `disconnect`
       (Solution Overview, Storage)
-- [ ] migrations with `medusa plugin:db:generate` against a local Postgres (`DATABASE_URL`; the e2e
+- [x] migrations with `medusa plugin:db:generate` against a local Postgres (`DATABASE_URL`; the e2e
       compose Postgres maps no host port, so start a throwaway `postgres` container for it)
-- [ ] the `exports` entry so a host app resolves the module; check on the peer floor 2.17.0
+- [x] the `exports` entry so a host app resolves the module; check on the peer floor 2.17.0
       (`e2e/README.md` "Another Medusa version"): the module merges and migrates and the provider
       container has `__pg_connection__`, or raise the peer floor (changelog note)
-- [ ] `loadCredentials(knex, options)` ⇒ `{mode, apiKey, accountId?, signingSecret?, source, envKey?,
+- [x] `loadCredentials(knex, options)` ⇒ `{mode, apiKey, accountId?, signingSecret?, source, envKey?,
       rows, storedMode}` with the mode rules of the Solution Overview; 30 s per-process cache;
       `clearCredentialsCache()`; `42P01` counts as no rows with one warning; other errors throw uncached
-- [ ] `apiKey` optional in `validateOptions`; a call without any key throws the "not connected" error;
+- [x] `apiKey` optional in `validateOptions`; a call without any key throws the "not connected" error;
       the `accountId` option ignores connected rows; a connected key never sends `MONEI-Account-ID`
-- [ ] the provider resolves its client per call (`this.client()`); `moneiClient(scope)` becomes async
+- [x] the provider resolves its client per call (`this.client()`); `moneiClient(scope)` becomes async
       and reads the same credentials; update every caller; the Apple Pay job warns and returns with no
       key
-- [ ] write tests for the mode rules (each row names its bug): env `pk_test_` + connected Live and Test
+- [x] write tests for the mode rules (each row names its bug): env `pk_test_` + connected Live and Test
       ⇒ the connected Test key (a connect moves no backend with an env key to live); env `pk_test_` +
       connected Live only ⇒ the env key; env `pk_live_` + connected Live ⇒ the connected key (the main
       migration case); env `pk_live_` + connected Test only ⇒ the env key; env `pk_abc…` + connected Test
@@ -571,21 +571,21 @@ default.
       mode `test` ⇒ the connected Test key (approval plus a reconnect does not go live); no env key +
       both rows + stored mode `live` ⇒ the connected Live key; nothing ⇒ the "not connected" error on a call while the provider
       constructs
-- [ ] write tests for the reader: a cleared cache sees a new row; an uncleared one does not at 29 s and
+- [x] write tests for the reader: a cleared cache sees a new row; an uncleared one does not at 29 s and
       does at 30 s + 1 ms (fake timers); a read still running when `clearCredentialsCache()` runs
       does not publish its result (a deferred fake query); an error
       with `code: "42P01"` (the pg error shape) ⇒ the env key, one warning for two calls; another error
       ⇒ thrown, and the next call queries again; a connected key with the `accountId` option set ⇒ the
       env key; no `MONEI-Account-ID` header on a connected key; the Apple Pay job with an https
       `storeCors` and no key ⇒ a warning, no call
-- [ ] write a no-restart test (the bug: today's singleton and `WeakMap` clients keep the first key): a
+- [x] write a no-restart test (the bug: today's singleton and `WeakMap` clients keep the first key): a
       provider call and a `moneiClient(scope)` call reach key A's mock; a new row B and
       `clearCredentialsCache()`; the next provider call and the next `moneiClient(scope)` call reach B's
       mock
-- [ ] write a `tests/module.test.ts` row: `require.resolve` of the module path Medusa builds
+- [x] write a `tests/module.test.ts` row: `require.resolve` of the module path Medusa builds
       (`medusa-payment-monei/.medusa/server/src/modules/monei-connect`) succeeds after the build
-- [ ] adapt the existing tests to the async client; no behaviour change in them
-- [ ] run tests — must pass before next task
+- [x] adapt the existing tests to the async client; no behaviour change in them
+- [x] run tests — must pass before next task
 
 ### Task 4: Callback verification and the fetch fallback
 
