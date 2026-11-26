@@ -1,4 +1,5 @@
 # Connect with MONEI: medusa-payment-monei
+\nTrello: https://trello.com/c/xaRD0Pxs
 
 ## Overview
 
