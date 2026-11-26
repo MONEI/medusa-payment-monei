@@ -115,7 +115,7 @@ Trello: https://trello.com/c/xaRD0Pxs
 
 ### Task 3: Update documentation
 
-- [ ] README: a "Scoped API key" section in Configuration (create the key in the MONEI dashboard with
+- [x] README: a "Scoped API key" section in Configuration (create the key in the MONEI dashboard with
       the scopes of Context, set `MONEI_API_KEY=mk_…` and `signingSecret`, rotation), the `signingSecret`
       row in Options, the `mk_` limits of the Solution Overview, and the Callbacks section (`v2` for an
       `mk_` key)

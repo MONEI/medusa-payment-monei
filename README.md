@@ -22,11 +22,11 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
   - When the MONEI amount is 1/100 of the total, refund these orders in the MONEI dashboard, not from Medusa. A refund from Medusa asks for 100 times what MONEI took.
 - **The package is a Medusa plugin.** Add it to `plugins`. The provider `resolve` path is now `medusa-payment-monei/providers/monei`.
 - **The public URL of the Medusa backend is required.** Set `MEDUSA_BACKEND_URL`, or the `backendUrl` option. The plugin registers the callback URL on every payment. You do not need a webhook in the MONEI dashboard.
-- **Delete the 0.1.x webhook.** If you added a webhook for Medusa in the MONEI dashboard (Settings, Webhooks), delete it. The plugin accepts its events, but each payment then reaches Medusa twice. See [Callbacks](#callbacks).
+- **Delete the 0.1.x webhook.** If you added a webhook for Medusa in the MONEI dashboard (Settings, Webhooks), delete it. Keeping the dashboard webhook with a `pk_` key delivers each payment to Medusa twice. See [Callbacks](#callbacks).
 - **Payments created before the upgrade have no callback URL.** 0.1.x did not register one, so MONEI sends no callback for these payments. Only a webhook in the MONEI dashboard sends their events. Capture, cancel and refund from the Medusa admin still work: the plugin fetches each payment from MONEI and does not use the amount or status that 0.1.x stored. Without a dashboard webhook, a checkout that was open at the upgrade completes only when the buyer comes back to the storefront.
 - **A checkout whose MONEI amount is not the cart amount cannot complete.** 1.0.0 compares the MONEI payment with the Medusa session amount and currency, in cents, before it authorizes. A checkout open at the upgrade with a 0.1.x payment of 1/100 of the cart is refused, and the error log names the payment. Cancel it (`AUTHORIZED`) or refund it (`SUCCEEDED`) in the MONEI dashboard.
 - **A checkout with a `medusa_` order id cannot complete.** 0.1.x made an order id `medusa_<time>_<random>` when Medusa sent no session id. 1.0.0 completes a cart only for a MONEI payment whose order id is the Medusa payment session id (`payses_...`). Capture, cancel and refund of existing orders do not check the order id. When a buyer paid such a payment and the cart stayed open, cancel it (`AUTHORIZED`) or refund it (`SUCCEEDED`) in the MONEI dashboard.
-- **`webhookSecret` is removed.** The plugin verifies the `MONEI-Signature` header with your API key.
+- **`webhookSecret` is removed.** With a `pk_` key, the plugin verifies the `MONEI-Signature` header with that key. See [Callbacks](#callbacks).
 - **There is one provider per payment method.** Enable each provider you want on your regions. See [Provider ids](#provider-ids).
 - **Send `return_url` for the hosted payment page.** 1.0.0 sends a complete, fail and cancel URL to MONEI only when the create-session request has `return_url` in `data`. Some copies of 0.1.x set `completeUrl` in the plugin. If your storefront relied on such a copy, it must send `return_url` now. Without it, the buyer stays on the MONEI page after the payment. The MONEI callback still completes the cart. `return_url` must be an absolute URL. The plugin adds `session_id` to it, and `monei_canceled=1` on a cancel. See [Hosted payment page](#hosted-payment-page).
 
@@ -87,13 +87,37 @@ Set `MEDUSA_BACKEND_URL` to the public URL of your Medusa backend, for example `
 
 The provider `id` must be `"monei"`. The callback URL, the store routes and the subscriber use this id. Another id breaks them.
 
+### Scoped API key
+
+In the MONEI Dashboard, open **API keys** and create a scoped key with these permissions.
+
+- For payments, grant `payments:read`, `payments:create`, `payments:manage` and `payments:refund`.
+- For customers and saved cards, grant `customers:read` and `customers:write`.
+- For Apple Pay domain registration, grant `applePayDomains:write`.
+
+Set `MONEI_API_KEY=mk_…` and `MONEI_SIGNING_SECRET=mksec_…` in the backend environment. Use them in the provider options. Leave `accountId` unset.
+
+```ts
+options: {
+  apiKey: process.env.MONEI_API_KEY,
+  signingSecret: process.env.MONEI_SIGNING_SECRET,
+},
+```
+
+To rotate a scoped key, set `MONEI_API_KEY` to the new key. Set `signingSecret` to `[newSecret, oldSecret]` in that order. Revoke the old key and remove its secret after its open payments settle. Revoking it early removes the `v2` signature from callbacks for those payments.
+
+Before switching from a `pk_` key, wait for open Multibanco and MB WAY payments to settle. Callbacks for payments made with a `pk_` key have no `v2` signature and are refused after the switch. Card, Bizum and PayPal payments can also complete through the storefront return.
+
+With a scoped key, the plugin refuses dashboard webhooks because they use their own signing secret. Capture and cancel from the Medusa Admin so the changes reach Medusa.
+
 ### Options
 
 | Option       | Type      | Required | Description                                                                                                                                  |
 | ------------ | --------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apiKey`     | `string`  | Yes      | MONEI API key. A test mode key creates test payments.                                                                                        |
+| `apiKey`     | `string`  | Yes      | MONEI API key (`pk_` or `mk_`). A test mode key creates test payments. |
+| `signingSecret` | `string` or `string[]` | With an `mk_` key | Scoped key's `mksec_` callback secret. Use an array during rotation, with the new secret first. Leave unset with a `pk_` key. |
 | `backendUrl` | `string`  | No       | Public base URL of the Medusa backend. Default: the `MEDUSA_BACKEND_URL` environment variable. One of the two must be set. It must be an absolute `http` or `https` URL. A trailing slash is removed. |
-| `accountId`  | `string`  | No       | Partner accounts only: the merchant account to act for.                                                                                      |
+| `accountId`  | `string`  | No       | The merchant account a partner acts for. Leave unset with an `mk_` key. |
 | `capture`    | `boolean` | No       | `true` (default) charges at once (SALE). `false` only authorizes (AUTH), for card and PayPal. Bizum, MB WAY and Multibanco always use SALE. A string such as `"false"` is refused. |
 | `releaseUnorderedHoldsAfterMinutes` | `number` | No | Minutes after an `AUTHORIZED` callback after which the plugin cancels the hold when its cart has no order. Default `30`. `0` turns the release off. Must be a whole number from `0` to `10080` (7 days). See [Capture mode](#capture-mode). |
 
@@ -147,10 +171,10 @@ Use the [Redis event bus](https://docs.medusajs.com/resources/infrastructure-mod
 
 ### Callbacks
 
-The plugin accepts two signed formats on the callback URL. Both are signed with your API key in the `MONEI-Signature` header.
+The plugin verifies the `MONEI-Signature` header against the raw callback body.
 
-- **The payment.** MONEI posts it to the callback URL that the plugin registers on every payment. This is the normal path.
-- **An account-webhook event** (`{id, type, objectType, objectId, object}`), from a webhook in the MONEI dashboard. The plugin uses only `charge` events and fetches the payment `objectId`. `object.id` must be the same id. It ignores events for other objects, such as subscriptions.
+- **The payment.** MONEI posts it to the callback URL that the plugin registers on every payment. With a `pk_` key, the plugin checks `v1` with the API key. With an `mk_` key, it checks `v2` with the configured `signingSecret`.
+- **An account-webhook event** (`{id, type, objectType, objectId, object}`), from a webhook in the MONEI dashboard. The plugin accepts these events with a `pk_` key and verifies `v1`. It uses only `charge` events and fetches the payment `objectId`. `object.id` must be the same id. It ignores events for other objects, such as subscriptions.
 
 In both formats the body is only a pointer. The plugin fetches the payment from MONEI and uses its status. You do not need a dashboard webhook.
 
