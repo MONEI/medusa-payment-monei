@@ -3,7 +3,7 @@ import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import registerDomains, { storefrontDomains } from "../src/jobs/monei-apple-pay-domains";
-import { API_KEY } from "./helpers";
+import { emptyCredentialsStore, API_KEY } from "./helpers";
 
 const shared = vi.hoisted(() => ({ client: undefined as unknown }));
 vi.mock("../src/providers/monei/core/client", async (importOriginal) => ({
@@ -31,6 +31,7 @@ describe("Apple Pay domain job", () => {
     registerDomains({
       resolve: (key: string) =>
         ({
+          __pg_connection__: emptyCredentialsStore,
           logger,
           configModule: {
             projectConfig: { http: { storeCors } },

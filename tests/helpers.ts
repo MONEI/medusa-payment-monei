@@ -24,17 +24,36 @@ export const hmac = (raw: string, key = API_KEY) =>
   createHmac("sha256", key).update(`${T}.${raw}`).digest("hex");
 export const sign = (raw: string, key = API_KEY) => `t=${T},v1=${hmac(raw, key)}`;
 export const signV2 = (raw: string, secret: string) => `t=${T},v2=${hmac(raw, secret)}`;
+export const emptyCredentialsStore = {
+  raw: async () => ({ rows: [{ rows: [], storedMode: null }] }),
+};
 
 type GraphConfig = { entity: string; fields: string[]; filters: Record<string, unknown> };
+
+function project(row: Record<string, unknown>, fields: string[]) {
+  const result: Record<string, unknown> = {};
+  for (const field of fields) {
+    const [key, child] = field.split(".");
+    const value = row[key];
+    if (!child || child === "*" || value == null) {
+      result[key] = value;
+    } else {
+      result[key] = {
+        ...(result[key] as Record<string, unknown> | undefined),
+        [child]: (value as Record<string, unknown>)[child],
+      };
+    }
+  }
+  return result;
+}
 
 /** A `query.graph` fake that returns only the requested fields, so a field missing from a query shows up. */
 export const fakeGraph =
   (tables: Record<string, Record<string, unknown>[]>) =>
   async ({ entity, fields, filters }: GraphConfig) => {
-    const keys = fields.map((field) => field.split(".")[0]);
     return {
       data: tables[entity]
         .filter((row) => Object.entries(filters).every(([key, value]) => row[key] === value))
-        .map((row) => Object.fromEntries(keys.map((key) => [key, row[key]]))),
+        .map((row) => project(row, fields)),
     };
   };

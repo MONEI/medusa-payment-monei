@@ -66,7 +66,6 @@ export default async function moneiHoldRelease({ event, container }: SubscriberA
   const { payment_id: paymentId, session_id: sessionId } = event.data;
   const logger = container.resolve<Logger>(ContainerRegistrationKeys.LOGGER);
   const query = resolveQuery(container);
-  const client = await moneiClient(container);
   const kept = (reason: string) =>
     logger.info(`MONEI hold check: payment ${paymentId} kept: ${reason}`);
 
@@ -96,6 +95,7 @@ export default async function moneiHoldRelease({ event, container }: SubscriberA
       if ((current?.data as { id?: unknown } | null | undefined)?.id !== paymentId) {
         return kept(`session ${sessionId} no longer holds it`);
       }
+      const client = await moneiClient(container);
       payment = await callMonei("get payment", () => client.payments.get(paymentId));
       if (payment.status !== PaymentStatus.AUTHORIZED || payment.orderId !== sessionId) {
         return kept(`it is ${payment.status}`);

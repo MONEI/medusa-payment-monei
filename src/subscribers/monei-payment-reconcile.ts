@@ -12,6 +12,7 @@ import {
   PaymentWebhookEvents,
 } from "@medusajs/framework/utils";
 import { type Monei, type Payment, PaymentStatus } from "@monei-js/node-sdk";
+import { getMoneiOptions } from "../providers/monei/core/client";
 import type { Credentials } from "../providers/monei/core/credentials";
 import { isNotFound, toMedusaError } from "../providers/monei/core/errors";
 import { isMoneiProvider, moneiCustomerIdOf, sessionIdOf } from "../providers/monei/core/ids";
@@ -32,7 +33,6 @@ export const ORPHAN_PAYMENT_EVENT = "monei.orphan_payment";
 
 type StoredSession = WebhookSession & {
   id: string;
-  data?: Record<string, unknown> | null;
   context?: {
     customer?: { id?: string } | null;
     account_holder?: { data?: Record<string, unknown> } | null;
@@ -43,7 +43,7 @@ async function findSession(query: Query, id: string): Promise<StoredSession | un
   return (await findOne(
     query,
     "payment_session",
-    ["id", "data", "context", "payment.captured_at", "payment.canceled_at"],
+    ["id", "provider_id", "data", "context", "payment.captured_at", "payment.canceled_at"],
     { id },
   )) as StoredSession | undefined;
 }
@@ -119,7 +119,8 @@ export default async function moneiPaymentReconcile({
   if (!isMoneiProvider(providerId)) return;
 
   const logger = container.resolve<Logger>(ContainerRegistrationKeys.LOGGER);
-  const credentials = await moneiCredentials(container);
+  const options = getMoneiOptions(container);
+  const credentials = await moneiCredentials(container, options);
   const owner = container.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
   const client = () => clientForCredentials(owner, credentials);
   const query = resolveQuery(container);
@@ -127,6 +128,8 @@ export default async function moneiPaymentReconcile({
   const callback = await verifyWebhook(credentials, event.data.payload ?? {}, {
     client,
     logger,
+    providerId,
+    accountWebhookSigningSecret: options.accountWebhookSigningSecret,
     findSession: (id) => findSession(query, id),
   });
   if (!callback) return;
@@ -138,12 +141,15 @@ export default async function moneiPaymentReconcile({
 
   const session = await findSession(query, sessionId);
 
-  if (HELD_OR_MOVED.has(payment.status) && session?.data?.id !== payment.id) {
-    await reportOrphan(container, logger, payment, session);
+  // An account webhook may deliver payments from several providers to the same URL.
+  if (session && session.provider_id !== providerId) return;
+  if (session?.data?.id !== payment.id) {
+    if (HELD_OR_MOVED.has(payment.status)) await reportOrphan(container, logger, payment, session);
+    return;
   }
   // Scheduled for every hold: the core subscriber completes the cart in parallel, so
   // whether it got an order is known only later, at the re-check.
-  if (payment.status === PaymentStatus.AUTHORIZED && session?.data?.id === payment.id) {
+  if (payment.status === PaymentStatus.AUTHORIZED) {
     await scheduleHoldRelease(container, { payment_id: payment.id, session_id: sessionId });
   }
   if (session?.data?.monei_customer_missing === true) {

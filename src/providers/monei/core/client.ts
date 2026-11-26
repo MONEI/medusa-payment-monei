@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { ConfigModule, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { Monei } from "@monei-js/node-sdk";
 import type { MoneiOptions } from "../types";
 import { PROVIDER_ID } from "./ids";
@@ -120,14 +120,8 @@ export function getUserAgent(): string {
   return userAgent;
 }
 
-export class MoneiNotConnectedError extends MedusaError {
-  constructor() {
-    super(
-      MedusaError.Types.NOT_ALLOWED,
-      "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY",
-    );
-  }
-}
+export const NOT_CONNECTED =
+  "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY";
 
 export function createMoneiClient(options: { apiKey: string; accountId?: string }): Monei {
   const monei = new Monei(options.apiKey, {

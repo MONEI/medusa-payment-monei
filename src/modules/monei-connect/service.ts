@@ -58,10 +58,15 @@ export default class MoneiConnectService extends MedusaService({
 
   /** A null liveBasis means there was no stored Live row when the caller checked Live. */
   async switchCredentials(results: SwitchResults, liveBasis: string | null): Promise<SwitchResult> {
-    const result = await this.withCredentialLock(async (context) => {
-      const rows = await this.listMoneiCredentials({}, {}, context);
+    const result = await this.withCredentialLock(async (context, trx) => {
+      const rows = await this.listMoneiCredentials(
+        {},
+        { select: ["id", "mode", "account_id"] },
+        context,
+      );
       const live = rows.find((row) => row.mode === "live");
       if (results.live) {
+        // Check the basis under the lock before interpreting the stored account.
         if ((live?.id ?? null) !== liveBasis) return "temporarily_unavailable";
         if (live && live.account_id !== results.live.accountId) return "otherAccount";
       }
@@ -71,15 +76,21 @@ export default class MoneiConnectService extends MedusaService({
         if (!credential) continue;
         const previous = rows.find((row) => row.mode === mode);
         if (previous) await this.deleteMoneiCredentials(previous.id, context);
-        await this.createMoneiCredentials(
-          {
-            mode,
-            account_id: credential.accountId,
-            api_key: credential.apiKey,
-            signing_secret: credential.signingSecret,
-          },
-          context,
-        );
+        // A bound Knex insert bypasses MikroORM's interpolated query logging.
+        try {
+          await trx("monei_credential")
+            .insert({
+              id: generateEntityId(undefined, "mcred"),
+              mode,
+              account_id: credential.accountId,
+              api_key: credential.apiKey,
+              signing_secret: credential.signingSecret,
+            })
+            .debug(false);
+        } catch {
+          // PostgreSQL errors can include the full failing row.
+          throw new Error(`Could not write the MONEI ${mode} credential`);
+        }
       }
       if (results.live || results.test) {
         const [setting] = await this.listMoneiSettings({ id: MONEI_SETTING_ID }, {}, context);

@@ -13,7 +13,7 @@ import { GET as listMethods } from "../src/api/store/monei/payment-methods/route
 import { GET as getConfig } from "../src/api/store/monei/config/route";
 import { GET as paymentStatus } from "../src/api/store/monei/payment-status/route";
 import { opaqueId } from "../src/providers/monei/core/ids";
-import { fakeGraph } from "./helpers";
+import { emptyCredentialsStore, fakeGraph } from "./helpers";
 
 // Routes build their own client; hand them one whose axios instance is mocked.
 const shared = vi.hoisted(() => ({ client: undefined as unknown }));
@@ -65,6 +65,7 @@ const tables: Record<string, Record<string, unknown>[]> = {
     { id: "cart_C", customer_id: "cus_C" },
     { id: "cart_G", customer_id: null },
     { id: "cart_D", customer_id: "cus_D" },
+    { id: "cart_live", customer_id: "cus_live" },
   ],
   cart_payment_collection: [
     { cart_id: "cart_A", payment_collection_id: "pc_A" },
@@ -72,8 +73,15 @@ const tables: Record<string, Record<string, unknown>[]> = {
     { cart_id: "cart_C", payment_collection_id: "pc_C" },
     { cart_id: "cart_G", payment_collection_id: "pc_G" },
     { cart_id: "cart_D", payment_collection_id: "pc_D" },
+    { cart_id: "cart_live", payment_collection_id: "pc_live" },
   ],
   payment_session: [
+    {
+      id: "payses_live",
+      payment_collection_id: "pc_live",
+      provider_id: "pp_monei_monei",
+      data: { id: "pay_live" },
+    },
     {
       id: "payses_A",
       payment_collection_id: "pc_A",
@@ -131,6 +139,7 @@ beforeEach(() => {
   mock = new MockAdapter(client.client);
   graph = vi.fn(fakeGraph(tables));
   const deps: Record<string, unknown> = {
+    __pg_connection__: emptyCredentialsStore,
     query: { graph },
     logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
     configModule: {
@@ -545,6 +554,17 @@ describe("DELETE /store/monei/payment-methods/:id", () => {
     ]);
   });
 
+  it("refuses to delete a saved card owned by a holder in the other mode", async () => {
+    mock
+      .onGet(`${API}/customers/mcus_live/payment-methods`)
+      .reply(200, [savedCard(TOKEN_A, "4242")]);
+    mock.onDelete(`${API}/customers/mcus_live/payment-methods/${TOKEN_A}`).reply(200);
+
+    expect((await remove("cus_live", opaqueId(TOKEN_A))).status).toBe(404);
+    expect(mock.history.get).toHaveLength(0);
+    expect(mock.history.delete).toHaveLength(0);
+  });
+
   it.each([
     ["another customer's opaque id", opaqueId(TOKEN_B)],
     ["a raw token", TOKEN_A],
@@ -577,6 +597,28 @@ describe("POST /store/monei/confirm", () => {
   beforeEach(() => {
     mock.onGet(`${API}/customers/mcus_A/payment-methods`).reply(200, [savedCard(TOKEN_A, "4242")]);
     mock.onGet(`${API}/payments/pay_A`).reply(200, moneiPayment());
+  });
+
+  it("refuses to confirm with a saved card owned by a holder in the other mode", async () => {
+    const payment = moneiPayment({
+      id: "pay_live",
+      orderId: "payses_live",
+      customerId: "mcus_live",
+    });
+    mock.onGet(`${API}/payments/pay_live`).reply(200, payment);
+    mock
+      .onGet(`${API}/customers/mcus_live/payment-methods`)
+      .reply(200, [savedCard(TOKEN_A, "4242")]);
+    mock.onPost(`${API}/payments/pay_live/confirm`).reply(200, payment);
+
+    const { status } = await confirmAs("cus_live", {
+      payment_session_id: "payses_live",
+      payment_method_id: opaqueId(TOKEN_A),
+    });
+
+    expect(status).toBe(404);
+    expect(mock.history.get).toHaveLength(0);
+    expect(mock.history.post).toHaveLength(0);
   });
 
   it("confirms with the saved token and returns the 3DS redirect without the token", async () => {

@@ -87,12 +87,13 @@ function storedCredentials(knex: Knex, logger: Pick<Logger, "warn">): Promise<St
 }
 
 export async function loadCredentials(
-  knex: Knex | undefined,
+  knex: Knex,
   options: Pick<MoneiOptions, "apiKey" | "accountId">,
   logger: Pick<Logger, "warn"> = console,
 ): Promise<Credentials> {
   const envKey = options.apiKey;
-  const stored = knex ? await storedCredentials(knex, logger) : EMPTY;
+  if (!knex) throw new Error("MONEI credentials require the Medusa PostgreSQL connection");
+  const stored = await storedCredentials(knex, logger);
   const mode = envKey ? modeOfKey(envKey) : stored.storedMode;
   const row = options.accountId ? undefined : stored.rows.find((row) => row.mode === mode);
   if (row) {

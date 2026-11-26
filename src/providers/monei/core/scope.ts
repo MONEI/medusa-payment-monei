@@ -1,9 +1,9 @@
 // Helpers for routes and subscribers, which cannot resolve the provider itself.
 import type { Knex } from "@medusajs/framework/mikro-orm/knex";
 import type { Logger, MedusaContainer } from "@medusajs/framework/types";
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
+import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import type { Monei } from "@monei-js/node-sdk";
-import { createMoneiClient, getMoneiOptions, MoneiNotConnectedError } from "./client";
+import { createMoneiClient, getMoneiOptions, NOT_CONNECTED } from "./client";
 import { type Credentials, loadCredentials } from "./credentials";
 import { CARD_PROVIDER_ID, moneiCustomerIdOf } from "./ids";
 
@@ -23,7 +23,7 @@ const clients = new WeakMap<object, { apiKey: string; accountId?: string; client
 
 export function clientForCredentials(owner: object, credentials: Credentials): Monei {
   const { apiKey } = credentials;
-  if (!apiKey) throw new MoneiNotConnectedError();
+  if (!apiKey) throw new MedusaError(MedusaError.Types.NOT_ALLOWED, NOT_CONNECTED);
   const accountId = credentials.source === "env" ? credentials.accountId : undefined;
   const cached = clients.get(owner);
   if (cached?.apiKey === apiKey && cached.accountId === accountId) {
@@ -34,10 +34,13 @@ export function clientForCredentials(owner: object, credentials: Credentials): M
   return client;
 }
 
-export function moneiCredentials(scope: MedusaContainer): Promise<Credentials> {
+export function moneiCredentials(
+  scope: MedusaContainer,
+  options = getMoneiOptions(scope),
+): Promise<Credentials> {
   return loadCredentials(
     scope.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION),
-    getMoneiOptions(scope),
+    options,
     scope.resolve<Logger>(ContainerRegistrationKeys.LOGGER),
   );
 }

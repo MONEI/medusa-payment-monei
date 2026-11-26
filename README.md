@@ -21,12 +21,12 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
   - When they are the same, the amounts are correct. You can refund these orders from Medusa.
   - When the MONEI amount is 1/100 of the total, refund these orders in the MONEI dashboard, not from Medusa. A refund from Medusa asks for 100 times what MONEI took.
 - **The package is a Medusa plugin.** Add it to `plugins`. The provider `resolve` path is now `medusa-payment-monei/providers/monei`.
-- **The public URL of the Medusa backend is required.** Set `MEDUSA_BACKEND_URL`, or the `backendUrl` option. The plugin registers the callback URL on every payment. You do not need a webhook in the MONEI dashboard.
-- **Delete the 0.1.x webhook.** If you added a webhook for Medusa in the MONEI dashboard (Settings, Webhooks), delete it. The plugin accepts its events, but each payment then reaches Medusa twice. See [Callbacks](#callbacks).
+- **The public URL of the Medusa backend is required.** Set `MEDUSA_BACKEND_URL`, or the `backendUrl` option. The plugin registers the callback URL on every payment. A dashboard webhook is optional for checkout and delivers events such as captures made in the MONEI dashboard.
+- **Review the 0.1.x webhook.** Keep a dashboard webhook if you need its events, such as captures made in the dashboard. A payment may then reach Medusa by both routes. See [Callbacks](#callbacks).
 - **Payments created before the upgrade have no callback URL.** 0.1.x did not register one, so MONEI sends no callback for these payments. Only a webhook in the MONEI dashboard sends their events. Capture, cancel and refund from the Medusa admin still work: the plugin fetches each payment from MONEI and does not use the amount or status that 0.1.x stored. Without a dashboard webhook, a checkout that was open at the upgrade completes only when the buyer comes back to the storefront.
 - **A checkout whose MONEI amount is not the cart amount cannot complete.** 1.0.0 compares the MONEI payment with the Medusa session amount and currency, in cents, before it authorizes. A checkout open at the upgrade with a 0.1.x payment of 1/100 of the cart is refused, and the error log names the payment. Cancel it (`AUTHORIZED`) or refund it (`SUCCEEDED`) in the MONEI dashboard.
 - **A checkout with a `medusa_` order id cannot complete.** 0.1.x made an order id `medusa_<time>_<random>` when Medusa sent no session id. 1.0.0 completes a cart only for a MONEI payment whose order id is the Medusa payment session id (`payses_...`). Capture, cancel and refund of existing orders do not check the order id. When a buyer paid such a payment and the cart stayed open, cancel it (`AUTHORIZED`) or refund it (`SUCCEEDED`) in the MONEI dashboard.
-- **`webhookSecret` is removed.** The plugin verifies the `MONEI-Signature` header with your API key.
+- **`webhookSecret` is removed.** For a dashboard account webhook with a signing secret, use `accountWebhookSigningSecret`. See [Callbacks](#callbacks).
 - **There is one provider per payment method.** Enable each provider you want on your regions. See [Provider ids](#provider-ids).
 - **Send `return_url` for the hosted payment page.** 1.0.0 sends a complete, fail and cancel URL to MONEI only when the create-session request has `return_url` in `data`. Some copies of 0.1.x set `completeUrl` in the plugin. If your storefront relied on such a copy, it must send `return_url` now. Without it, the buyer stays on the MONEI page after the payment. The MONEI callback still completes the cart. `return_url` must be an absolute URL. The plugin adds `session_id` to it, and `monei_canceled=1` on a cancel. See [Hosted payment page](#hosted-payment-page).
 
@@ -45,7 +45,7 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
 
 - Medusa `>=2.17.0 <3`. CI runs the full end-to-end suite on 2.22.3, and the `capture: false` specs (hosted card included) on 2.17.0. Medusa 2.17.0 itself did not start in our tests with the Redis event bus (`@medusajs/medusa/event-bus-redis`) in the default worker mode: use 2.17.1 or later with Redis.
 - Node.js `>=22.22.0`.
-- A MONEI account and its API key. Get the key in the MONEI Dashboard, under Settings, API Access.
+- Payment operations require a MONEI account and an active credential. For setup, get your API key in the MONEI Dashboard under Settings, API Access and set `MONEI_API_KEY`. The backend can start without an API key.
 - A backend URL that MONEI can reach from the internet. MONEI sends payment callbacks to it.
 
 ## Installation
@@ -53,6 +53,8 @@ Version 1.0.0 is a full rewrite. Read this section before you upgrade.
 ```bash
 npm install medusa-payment-monei
 ```
+
+After installing or upgrading, run `medusa db:migrate` from your Medusa backend with the plugin configured. Existing payments that use the configured API key keep working while the new tables are absent.
 
 ## Configuration
 
@@ -91,7 +93,8 @@ The provider `id` must be `"monei"`. The callback URL, the store routes and the 
 
 | Option       | Type      | Required | Description                                                                                                                                  |
 | ------------ | --------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apiKey`     | `string`  | Yes      | MONEI API key. A test mode key creates test payments.                                                                                        |
+| `apiKey`     | `string`  | No       | MONEI API key, optional at startup. Set `MONEI_API_KEY` for manual setup. A test key creates test payments. |
+| `accountWebhookSigningSecret` | `string` | No | Signing secret (`whsec_…`) for an optional MONEI account webhook. |
 | `backendUrl` | `string`  | No       | Public base URL of the Medusa backend. Default: the `MEDUSA_BACKEND_URL` environment variable. One of the two must be set. It must be an absolute `http` or `https` URL. A trailing slash is removed. |
 | `accountId`  | `string`  | No       | Partner accounts only: the merchant account to act for.                                                                                      |
 | `capture`    | `boolean` | No       | `true` (default) charges at once (SALE). `false` only authorizes (AUTH), for card and PayPal. Bizum, MB WAY and Multibanco always use SALE. A string such as `"false"` is refused. |
@@ -147,12 +150,12 @@ Use the [Redis event bus](https://docs.medusajs.com/resources/infrastructure-mod
 
 ### Callbacks
 
-The plugin accepts two signed formats on the callback URL. Both are signed with your API key in the `MONEI-Signature` header.
+The plugin verifies the `MONEI-Signature` header using the active stored signing secret for `v2` or the configured API key for `v1`. A verified body must have a boolean `livemode` matching the active mode. Partner providers using a configured API key with `accountId` skip that check because the master key's mode can differ from the merchant's.
 
-- **The payment.** MONEI posts it to the callback URL that the plugin registers on every payment. This is the normal path.
-- **An account-webhook event** (`{id, type, objectType, objectId, object}`), from a webhook in the MONEI dashboard. The plugin uses only `charge` events and fetches the payment `objectId`. `object.id` must be the same id. It ignores events for other objects, such as subscriptions.
+- **Payment body.** MONEI posts it to the callback URL that the plugin registers on every payment. If the signature fails, the plugin can fetch the payment with the active key after checking the payment ID and matching it against the current session and provider. The session's Medusa payment must be open or authorized with neither a capture nor a cancellation. The plugin allows up to five fallback fetches per session and 60 per process per minute. Eligible callbacks wait for a slot when the quota is full.
+- **Account-webhook event** (`{id, type, objectType, objectId, object}`). The envelope requires a valid signature. To receive captures made in the MONEI dashboard, subscribe to `charge.captured`, send events to the corresponding Medusa provider's callback URL, and configure the webhook's `whsec_…` value as `accountWebhookSigningSecret`. The plugin uses only `charge` objects whose `object.id` matches `objectId`.
 
-In both formats the body is only a pointer. The plugin fetches the payment from MONEI and uses its status. You do not need a dashboard webhook.
+The plugin fetches the payment from MONEI for both formats. It uses the fetched status and checks the current session's provider and payment ID again before returning an action. Checkout uses the per-payment callback without a dashboard webhook.
 
 ## How it works
 
@@ -228,7 +231,7 @@ PayPal notes:
 
 ### Saved cards
 
-The card provider creates a MONEI customer for each signed-in Medusa customer (a Medusa account holder).
+The card provider creates a MONEI customer for each signed-in Medusa customer (a Medusa account holder). Saved-card operations use holders in the active mode. Legacy holders without a stored mode inherit the configured API key's mode when that key is available.
 
 1. Create the card session with `save_card: true`. After the payment, MONEI saves the card to the customer.
 2. List the saved cards with `GET /store/monei/payment-methods`.
@@ -281,7 +284,7 @@ All routes are under `/store`, so they need the publishable API key header like 
 
 An orphan payment is a MONEI payment that is `AUTHORIZED` or `SUCCEEDED`, but whose Medusa session no longer exists or points to another payment. For example, a buyer pays a Multibanco reference after a cart change.
 
-The subscriber logs an error and emits the `monei.orphan_payment` event with this data:
+When a verified callback leads to a fetched orphan payment, the subscriber logs an error and emits `monei.orphan_payment` with this data:
 
 ```ts
 {
@@ -297,7 +300,7 @@ Subscribe to it to alert your team. If no order was created, cancel an `AUTHORIZ
 
 The event can fire more than once for one payment: for example, once for `AUTHORIZED` and again for `SUCCEEDED`, or again when the event bus retries.
 
-The plugin does not pass a callback for a deleted session to Medusa's core webhook workflow. It logs a warning, `MONEI webhook ignored`, next to the orphan error. This keeps the callback of a deleted session away from Medusa's core workflow.
+The provider logs `MONEI webhook ignored` for a callback whose session disappeared or now points to a different payment. When the callback signature cannot be verified, that check stops the fallback before its lookup and the warning is the only report.
 
 The same subscriber removes a card account holder whose MONEI customer was deleted. The next session creates a new MONEI customer.
 
@@ -308,10 +311,10 @@ The same subscriber removes a card account holder whose MONEI customer was delet
 - **Dashboard refunds are not synced.** A refund made in the MONEI dashboard does not update the Medusa order.
 - **An authorization expires after about 7 days.** Capture an AUTH payment before then.
 - **A Multibanco order is created only when the buyer pays.** The cart stays open until then. The callback completes it.
-- **A sent Multibanco reference or Bizum request stays payable after a cart change.** It cannot be canceled. When the buyer pays, it becomes an orphan payment, reported by `monei.orphan_payment`.
+- **A sent Multibanco reference or Bizum request stays payable after a cart change.** It cannot be canceled. When the buyer pays, a verified callback for the orphan triggers `monei.orphan_payment`.
 - **Two equal partial refunds sent at almost the same moment can be merged into one at MONEI.** The plugin reports this as an error when it can detect it. Check the MONEI dashboard before you retry a refund.
 - **A refund retried after an unclear answer can refund twice.** A refund can be applied even when its answer is lost or is an error. Then the plugin throws "it may have been applied, check the MONEI dashboard before retrying". Check the dashboard before you retry. For a capture, the plugin checks the payment and accepts it when it is `SUCCEEDED`.
-- **Two MONEI customers can appear for one shopper** who opens two first checkouts at the same time. `GET /store/monei/payment-methods` lists the cards of both. A saved card pays only a session made with the MONEI customer that holds it; Medusa uses the first one for new sessions.
+- **Two MONEI customers can appear for one shopper** who opens two first checkouts at the same time. `GET /store/monei/payment-methods` lists the cards of every holder in the active mode. A saved card pays only a session made with the MONEI customer that holds it; Medusa uses the first one for new sessions.
 - **Rarely, a cart change at the moment a payment is authorized can make Medusa complete another cart that needs no payment.** No money moves. This applies in AUTH mode (`capture: false`) and is Medusa core behaviour.
 - **The card provider's `listPaymentMethods` returns opaque ids, not MONEI card tokens.** These are the ids of `GET /store/monei/payment-methods`. `data` holds only `brand`, `last4` and `expires_at`. `deletePaymentMethod` takes an opaque id and refuses an id that is not in the customer's list.
 

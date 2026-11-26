@@ -208,7 +208,7 @@ test.describe("post-payment operations", () => {
     for (const line of lines) {
       expect(line).toMatch(
         new RegExp(
-          `^warn:\\s+MONEI webhook ignored: payment ${moneiId}: session payses_\\w+ no longer exists$|^error:\\s+MONEI orphan payment: payment ${moneiId} `,
+          `^warn:\\s+MONEI webhook ignored: session payses_\\w+ no longer exists payment=${moneiId}$|^error:\\s+MONEI orphan payment: payment ${moneiId} `,
         ),
       );
     }

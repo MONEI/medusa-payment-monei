@@ -1,7 +1,7 @@
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
-import { TestProvider } from "./helpers";
+import { emptyCredentialsStore, TestProvider } from "./helpers";
 
 const SESSION_ID = "payses_01";
 const PAYMENT = "https://api.monei.com/v1/payments/pay_1";
@@ -70,7 +70,7 @@ beforeEach(async () => {
     list: vi.fn(async ({ id }: { id: string }) => (id === SESSION_ID ? [medusaSession()] : [])),
   };
   provider = new TestProvider(
-    { logger, paymentSessionService },
+    { logger, paymentSessionService, __pg_connection__: emptyCredentialsStore },
     { apiKey: "pk_test_x", backendUrl: "https://shop.test" },
   );
   mock = new MockAdapter((await provider["client"]()).client);

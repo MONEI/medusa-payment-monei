@@ -1,9 +1,15 @@
 import MockAdapter from "axios-mock-adapter";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
-import { moneiClient } from "../src/providers/monei/core/scope";
-import reconcile, { config } from "../src/subscribers/monei-payment-reconcile";
-import { API_KEY, fakeGraph, MONEI_PAYMENT_ID, sign, TestProvider } from "./helpers";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type * as reconcileModule from "../src/subscribers/monei-payment-reconcile";
+import {
+  API_KEY,
+  emptyCredentialsStore,
+  fakeGraph,
+  MONEI_PAYMENT_ID,
+  sign,
+  signV2,
+  type TestProvider,
+} from "./helpers";
 
 const mocks = vi.hoisted(() => new Map<string, MockAdapter[]>());
 vi.mock("../src/providers/monei/core/client", async (importOriginal) => {
@@ -21,6 +27,7 @@ vi.mock("../src/providers/monei/core/client", async (importOriginal) => {
 });
 
 const API = "https://api.monei.com/v1";
+const PROVIDER_ID = "pp_monei_monei";
 
 const callbackBody = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -91,18 +98,30 @@ let emit: ReturnType<typeof vi.fn>;
 let deleteAccountHolder: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let container: { resolve: (key: string) => unknown };
-let clock = Date.now();
+let Provider: typeof TestProvider;
+let reconcile: typeof reconcileModule.default;
+let config: typeof reconcileModule.config;
+let readCredentials: ReturnType<typeof vi.fn>;
+let moneiClient: typeof import("../src/providers/monei/core/scope").moneiClient;
+let options: { apiKey?: string; backendUrl: string };
 
 beforeEach(async () => {
-  clearCredentialsCache();
+  vi.resetModules();
+  ({ TestProvider: Provider } = await import("./helpers"));
+  ({ default: reconcile, config } = await import("../src/subscribers/monei-payment-reconcile"));
+  ({ moneiClient } = await import("../src/providers/monei/core/scope"));
   mocks.clear();
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime((clock += 120_000));
   tables = structuredClone(fixtures);
+  tables.payment_session.forEach((session) => {
+    session.provider_id = PROVIDER_ID;
+  });
+  options = { apiKey: API_KEY, backendUrl: "https://shop.test" };
+  readCredentials = vi.fn(emptyCredentialsStore.raw);
   emit = vi.fn();
   deleteAccountHolder = vi.fn();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   const deps: Record<string, unknown> = {
+    __pg_connection__: { raw: readCredentials },
     query: { graph: fakeGraph(tables) },
     logger,
     event_bus: { emit },
@@ -111,9 +130,7 @@ beforeEach(async () => {
       modules: {
         payment: {
           options: {
-            providers: [
-              { id: "monei", options: { apiKey: API_KEY, backendUrl: "https://shop.test" } },
-            ],
+            providers: [{ id: "monei", options }],
           },
         },
       },
@@ -123,7 +140,6 @@ beforeEach(async () => {
   await moneiClient(container as never);
   mock = mocks.get(API_KEY)![0];
 });
-afterEach(() => vi.useRealTimers());
 
 const run = (
   overrides: { provider?: string; rawData?: unknown; headers?: Record<string, unknown> } = {},
@@ -210,6 +226,27 @@ describe("reconcile subscriber: orphan payments", () => {
     expect(deleteAccountHolder).not.toHaveBeenCalled();
   });
 
+  it("does not alert for a payment delivered to the wrong provider's account webhook URL", async () => {
+    tables.payment_session.find(({ id }) => id === "payses_live")!.provider_id =
+      "pp_monei-paypal_monei";
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_live", status: "AUTHORIZED" }));
+
+    const raw = JSON.stringify({
+      type: "charge.authorized",
+      livemode: false,
+      objectType: "charge",
+      objectId: MONEI_PAYMENT_ID,
+      object: { id: MONEI_PAYMENT_ID },
+    });
+
+    await run({ rawData: raw, headers: { "monei-signature": sign(raw) } });
+
+    expect(emit).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it("ignores payments of another integration on the same MONEI account", async () => {
     // Bug: a WooCommerce order paid on the shared account is reported as a Medusa orphan.
     mock
@@ -248,32 +285,80 @@ describe("reconcile subscriber: verification", () => {
   });
 
   it("fetches with the active key after a bad signature when the session is open", async () => {
-    const raw = callbackBody({ orderId: "payses_other" });
+    const raw = callbackBody({ orderId: "payses_live" });
     mock
       .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
-      .reply(200, moneiPayment({ orderId: "payses_other" }));
+      .reply(200, moneiPayment({ orderId: "payses_live", status: "AUTHORIZED" }));
 
     await run({ rawData: raw, headers: { "monei-signature": sign(raw, "pk_test_other") } });
 
     expect(mock.history.get).toHaveLength(1);
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ name: "monei.orphan_payment" }));
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "monei.hold_release_due" }),
+      expect.anything(),
+    );
   });
 
-  it("refuses an unsigned replay after the session's Medusa payment is captured", async () => {
-    tables.payment_session.push({ id: "payses_captured", payment: { captured_at: new Date() } });
-    const raw = callbackBody({ orderId: "payses_captured" });
+  it.each(["captured_at", "canceled_at"])(
+    "does not fetch an unsigned replay when the session payment has %s",
+    async (field) => {
+      const id = "payses_finished";
+      tables.payment_session.push({
+        id,
+        provider_id: PROVIDER_ID,
+        data: { id: MONEI_PAYMENT_ID },
+        payment: { [field]: new Date() },
+      });
 
-    await run({ rawData: raw, headers: {} });
+      await run({ rawData: callbackBody({ orderId: id }), headers: {} });
 
+      expect(mock.history.get).toHaveLength(0);
+      expect(emit).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("captured or canceled"));
+    },
+  );
+
+  it("fetches a signed orphan with the connected key when there is no env key", async () => {
+    delete options.apiKey;
+    const key = "mk_test_fixture";
+    const secret = "mksec_fixture";
+    readCredentials.mockResolvedValue({
+      rows: [
+        {
+          rows: [
+            {
+              id: "credential",
+              mode: "test",
+              account_id: "merchant",
+              api_key: key,
+              signing_secret: secret,
+            },
+          ],
+          storedMode: "test",
+        },
+      ],
+    });
+    const { clearCredentialsCache } = await import("../src/providers/monei/core/credentials");
+    clearCredentialsCache();
+    await moneiClient(container as never);
+    const [connected] = mocks.get(key)!;
+    const url = `${API}/payments/${MONEI_PAYMENT_ID}`;
+    connected.onGet(url).reply(200, moneiPayment());
+
+    await run({ headers: { "monei-signature": signV2(callback, secret) } });
+
+    expect(connected.history.get.map((request) => request.url)).toEqual([url]);
     expect(mock.history.get).toHaveLength(0);
-    expect(emit).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "monei.orphan_payment" }),
+    );
   });
 
   it("shares the provider's refusal of a signed callback of the other mode", async () => {
     const raw = callbackBody({ livemode: true });
     const headers = { "monei-signature": sign(raw) };
-    const provider = new TestProvider(
-      { logger },
+    const provider = new Provider(
+      { logger, __pg_connection__: emptyCredentialsStore },
       { apiKey: API_KEY, backendUrl: "https://shop.test" },
     );
 
@@ -288,11 +373,17 @@ describe("reconcile subscriber: verification", () => {
   });
 
   it("shares the last fallback slot across the providers' separate clients for one delivery", async () => {
-    const orderId = "payses_other";
-    const payment = moneiPayment({ orderId });
+    const orderId = "payses_live";
+    const payment = moneiPayment({ orderId, status: "AUTHORIZED" });
     const paymentUrl = `${API}/payments/${MONEI_PAYMENT_ID}`;
-    const provider = new TestProvider(
-      { logger, paymentSessionService: { list: async () => [{ id: orderId }] } },
+    const provider = new Provider(
+      {
+        logger,
+        __pg_connection__: emptyCredentialsStore,
+        paymentSessionService: {
+          list: async () => tables.payment_session.filter(({ id }) => id === orderId),
+        },
+      },
       { apiKey: API_KEY, backendUrl: "https://shop.test" },
     );
     await provider["client"]();
@@ -303,7 +394,7 @@ describe("reconcile subscriber: verification", () => {
       const rawData = callbackBody({ orderId, updatedAt: index });
       await expect(
         provider.getWebhookActionAndData({ rawData, headers: {}, data: {} }),
-      ).resolves.toMatchObject({ action: "captured" });
+      ).resolves.toMatchObject({ action: "authorized" });
     }
 
     const raw = callbackBody({ orderId });
@@ -313,12 +404,13 @@ describe("reconcile subscriber: verification", () => {
       run({ rawData: JSON.parse(JSON.stringify(Buffer.from(raw))), headers }),
     ]);
 
-    expect(action).toMatchObject({ action: "captured" });
+    expect(action).toMatchObject({ action: "authorized" });
     expect(emit).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ name: "monei.orphan_payment" }),
+      expect.objectContaining({ name: "monei.hold_release_due" }),
+      expect.anything(),
     );
     expect(providerMock.history.get.length + mock.history.get.length).toBe(5);
-    expect(logger.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("orphan payment"));
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it("verifies a raw body that the Redis event bus serialized as a Buffer object", async () => {

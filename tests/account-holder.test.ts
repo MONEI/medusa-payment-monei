@@ -2,7 +2,7 @@ import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import MoneiCardService from "../src/providers/monei/services/monei-card";
-import { moneiError } from "./helpers";
+import { emptyCredentialsStore, moneiError } from "./helpers";
 
 const API = "https://api.monei.com/v1";
 const SESSION_ID = "payses_01";
@@ -23,7 +23,7 @@ beforeEach(async () => {
   clearCredentialsCache();
   logger = { warn: vi.fn(), info: vi.fn() };
   provider = new MoneiCardService(
-    { logger },
+    { logger, __pg_connection__: emptyCredentialsStore },
     { apiKey: "pk_test_x", backendUrl: "https://shop.test" },
   );
   mock = new MockAdapter((await provider["client"]()).client);

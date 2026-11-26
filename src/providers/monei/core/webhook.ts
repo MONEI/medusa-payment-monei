@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Logger } from "@medusajs/framework/types";
-import { Monei, type Payment } from "@monei-js/node-sdk";
+import type { Monei, Payment } from "@monei-js/node-sdk";
+import { createMoneiClient } from "./client";
 import type { Credentials } from "./credentials";
 import { callMonei } from "./errors";
 import { sessionIdOf } from "./ids";
@@ -9,17 +10,23 @@ const MINUTE = 60_000;
 const PAYMENT_ID = /^[a-f0-9]{32,40}$/i;
 
 export type WebhookSession = {
+  provider_id?: string;
+  data?: Record<string, unknown> | null;
   payment?: { captured_at?: unknown; canceled_at?: unknown } | null;
 };
 
 type WebhookContext = {
   client: () => Monei;
   logger: Logger;
+  providerId: string;
+  accountWebhookSigningSecret?: string;
   findSession: (id: string) => Promise<WebhookSession | undefined>;
 };
 type SignatureHeader = string | string[] | undefined;
 
-const deliveries = new Map<string, { expiresAt: number; result: Promise<Payment | undefined> }>();
+type Delivery = { expiresAt: number; result: Promise<Payment | undefined> };
+const deliveries = new Map<string, Delivery>();
+const deferred = new Map<string, Delivery>();
 let fallbackFetches: { at: number; sessionId: string }[] = [];
 
 /** The `MONEI-Signature` header in any case. */
@@ -73,24 +80,34 @@ function paymentIdOf(body: Record<string, unknown>): { paymentId: string } | { r
 
 function signedBy(
   credentials: Credentials,
-  client: () => Monei,
+  { client, accountWebhookSigningSecret }: WebhookContext,
   raw: string,
   signature: SignatureHeader,
-): "v2" | "v1" | undefined {
+): { version: "v2" | "v1"; body: unknown } | undefined {
   if (typeof signature !== "string" || !signature) return undefined;
   if (credentials.source === "connected" && credentials.signingSecret) {
     try {
-      client().verifySignature(raw, signature, credentials.signingSecret);
-      return "v2";
+      return {
+        version: "v2",
+        body: client().verifySignature(raw, signature, credentials.signingSecret),
+      };
     } catch {
       // A callback sent before the connect may still verify with the env key.
     }
   }
-  if (credentials.envKey) {
-    const envClient = credentials.source === "env" ? client() : new Monei(credentials.envKey);
+  if (accountWebhookSigningSecret) {
     try {
-      envClient.verifySignature(raw, signature);
-      return "v1";
+      const body = client().verifySignature(raw, signature, accountWebhookSigningSecret);
+      if (isObject(body) && "objectType" in body) return { version: "v2", body };
+    } catch {
+      // The account webhook has its own secret.
+    }
+  }
+  if (credentials.envKey) {
+    const envClient =
+      credentials.source === "env" ? client() : createMoneiClient({ apiKey: credentials.envKey });
+    try {
+      return { version: "v1", body: envClient.verifySignature(raw, signature) };
     } catch {
       return undefined;
     }
@@ -117,63 +134,109 @@ export function ignoreWebhook(logger: Logger, reason: string, id?: unknown): und
   return undefined;
 }
 
+async function fallbackSession(
+  { findSession, logger, providerId }: WebhookContext,
+  id: string,
+  sessionId: string,
+): Promise<WebhookSession | undefined> {
+  const session = await findSession(sessionId);
+  if (!session) return ignoreWebhook(logger, "fallback callback session does not exist", id);
+  if (session.provider_id !== providerId || session.data?.id !== id) {
+    return ignoreWebhook(
+      logger,
+      "fallback callback session does not belong to this provider and payment",
+      id,
+    );
+  }
+  if (session.payment?.captured_at || session.payment?.canceled_at) {
+    return ignoreWebhook(logger, "fallback callback session payment is captured or canceled", id);
+  }
+  return session;
+}
+
+/** Reserve a slot or return how long both limits need to clear. */
+function takeFallbackSlot(sessionId: string): number {
+  const now = Date.now();
+  fallbackFetches = fallbackFetches.filter(({ at }) => at > now - MINUTE);
+  const sessionFetches = fallbackFetches.filter((fetch) => fetch.sessionId === sessionId);
+  const wait = Math.max(
+    fallbackFetches.length >= 60 ? fallbackFetches[0].at + MINUTE - now : 0,
+    sessionFetches.length >= 5 ? sessionFetches[0].at + MINUTE - now : 0,
+  );
+  if (!wait) fallbackFetches.push({ at: now, sessionId });
+  return wait;
+}
+
 function fetchFallback(
   credentials: Credentials,
-  { client, logger }: WebhookContext,
+  context: WebhookContext,
   id: string,
   sessionId: string,
   raw: string,
   signature: SignatureHeader,
-): Promise<Payment | undefined> | undefined {
+): Promise<Payment | undefined> {
+  const { client, logger } = context;
   const now = Date.now();
   for (const [key, entry] of deliveries) {
     if (entry.expiresAt <= now) deliveries.delete(key);
   }
   // Both subscribers can reuse a fetch, but a key or merchant switch needs a fresh one.
-  const key = createHash("sha256")
+  const scope = createHash("sha256")
     .update(
-      JSON.stringify([
-        id,
-        raw,
-        signature,
-        credentials.apiKey,
-        credentials.accountId,
-        credentials.mode,
-      ]),
+      JSON.stringify([id, sessionId, credentials.apiKey, credentials.accountId, credentials.mode]),
     )
     .digest("hex");
-  const existing = deliveries.get(key);
+  const key = createHash("sha256")
+    .update(JSON.stringify([scope, raw, signature]))
+    .digest("hex");
+  const existing = deliveries.get(key) ?? deferred.get(scope);
   if (existing) return existing.result;
 
-  fallbackFetches = fallbackFetches.filter(({ at }) => at > now - MINUTE);
-  if (
-    fallbackFetches.length >= 60 ||
-    fallbackFetches.filter((fetch) => fetch.sessionId === sessionId).length >= 5
-  ) {
-    logger.error(`MONEI webhook ignored: fallback fetch quota exceeded${paymentLog(id)}`);
-    return undefined;
-  }
-  fallbackFetches.push({ at: now, sessionId });
-  logger.info(`MONEI callback fallback fetch payment=${id}`);
-  const result = callMonei("get payment", () => client().payments.get(id)).then((payment) => {
-    if (payment.id !== id || payment.orderId !== sessionId) {
-      return ignoreWebhook(logger, "fetched payment id or orderId does not match the callback", id);
-    }
-    if (!matchesMode(credentials, payment.livemode)) {
-      return ignoreWebhook(
-        logger,
-        "fetched payment livemode does not match the configured mode",
-        id,
-      );
-    }
-    return payment;
-  });
-  const delivery = { expiresAt: now + MINUTE, result };
+  let wait = takeFallbackSlot(sessionId);
+  const clearDeferred = () => {
+    if (deferred.get(scope) === delivery) deferred.delete(scope);
+  };
+  const delivery: Delivery = {
+    expiresAt: Infinity,
+    result: Promise.resolve().then(async () => {
+      if (wait)
+        logger.warn(`MONEI callback deferred: fallback fetch quota reached${paymentLog(id)}`);
+      while (wait) {
+        await new Promise<void>((resolve) => setTimeout(resolve, wait));
+        if (!(await fallbackSession(context, id, sessionId))) return undefined;
+        wait = takeFallbackSlot(sessionId);
+      }
+      clearDeferred();
+      delivery.expiresAt = Date.now() + MINUTE;
+      logger.info(`MONEI callback fallback fetch payment=${id}`);
+      const payment = await callMonei("get payment", () => client().payments.get(id));
+      if (payment.id !== id || payment.orderId !== sessionId) {
+        return ignoreWebhook(
+          logger,
+          "fetched payment id or orderId does not match the callback",
+          id,
+        );
+      }
+      if (!matchesMode(credentials, payment.livemode)) {
+        return ignoreWebhook(
+          logger,
+          "fetched payment livemode does not match the configured mode",
+          id,
+        );
+      }
+      return payment;
+    }),
+  };
+  if (wait) deferred.set(scope, delivery);
   deliveries.set(key, delivery);
-  void result.catch(() => {
+  const discard = () => {
+    clearDeferred();
     if (deliveries.get(key) === delivery) deliveries.delete(key);
-  });
-  return result;
+  };
+  void delivery.result.then(() => {
+    if (delivery.expiresAt === Infinity) discard();
+  }, discard);
+  return delivery.result;
 }
 
 /** Read only the raw callback. Only the fetched payment supplies settlement data. */
@@ -182,21 +245,15 @@ export async function verifyWebhook(
   { rawData, headers }: { rawData?: unknown; headers?: Record<string, unknown> },
   context: WebhookContext,
 ): Promise<{ payment: Payment; verified: boolean } | undefined> {
-  const { client, logger, findSession } = context;
+  const { client, logger } = context;
   if (!credentials.apiKey) return ignoreWebhook(logger, "MONEI is not connected");
   const raw = rawBody(rawData);
   if (!raw) return ignoreWebhook(logger, "raw body is missing or not a string or Buffer");
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return ignoreWebhook(logger, "raw body is not valid JSON");
-  }
-  if (!isObject(body)) return ignoreWebhook(logger, "raw body is not a JSON object");
-
   const signature = signatureHeader(headers);
-  const version = signedBy(credentials, client, raw, signature);
-  if (version) {
+  const signed = signedBy(credentials, context, raw, signature);
+  if (signed) {
+    const { version, body } = signed;
+    if (!isObject(body)) return ignoreWebhook(logger, "raw body is not a JSON object");
     const pointer = paymentIdOf(body);
     if ("refused" in pointer) return ignoreWebhook(logger, pointer.refused);
     const { paymentId } = pointer;
@@ -213,6 +270,13 @@ export async function verifyWebhook(
     return { payment, verified: true };
   }
 
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return ignoreWebhook(logger, "raw body is not valid JSON");
+  }
+  if (!isObject(body)) return ignoreWebhook(logger, "raw body is not a JSON object");
   if ("objectType" in body) {
     return ignoreWebhook(
       logger,
@@ -225,11 +289,7 @@ export async function verifyWebhook(
   const sessionId = sessionIdOf(body.orderId);
   if (!sessionId)
     return ignoreWebhook(logger, "fallback callback orderId is not a Medusa session id", id);
-  const session = await findSession(sessionId);
-  if (!session) return ignoreWebhook(logger, "fallback callback session does not exist", id);
-  if (session.payment?.captured_at || session.payment?.canceled_at) {
-    return ignoreWebhook(logger, "fallback callback session payment is captured or canceled", id);
-  }
+  if (!(await fallbackSession(context, id, sessionId))) return undefined;
   const payment = await fetchFallback(credentials, context, id, sessionId, raw, signature);
   return payment ? { payment, verified: false } : undefined;
 }

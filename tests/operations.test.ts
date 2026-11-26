@@ -1,7 +1,7 @@
 import MockAdapter from "axios-mock-adapter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
-import { TestProvider } from "./helpers";
+import { emptyCredentialsStore, TestProvider } from "./helpers";
 
 const SESSION_ID = "payses_01";
 const PAYMENT = "https://api.monei.com/v1/payments/pay_1";
@@ -58,7 +58,10 @@ let mock: MockAdapter;
 beforeEach(async () => {
   clearCredentialsCache();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
-  provider = new TestProvider({ logger }, { apiKey: "pk_test_x", backendUrl: "https://shop.test" });
+  provider = new TestProvider(
+    { logger, __pg_connection__: emptyCredentialsStore },
+    { apiKey: "pk_test_x", backendUrl: "https://shop.test" },
+  );
   mock = new MockAdapter((await provider["client"]()).client);
 });
 
@@ -69,6 +72,46 @@ afterEach(() => {
 const posts = (path: string) => mock.history.post.filter((r) => r.url === `${PAYMENT}/${path}`);
 
 describe("capturePayment", () => {
+  it("keeps the original key for capture and recovery when credentials change during the first GET", async () => {
+    const credential = {
+      id: "credential",
+      mode: "test",
+      account_id: "merchant",
+      api_key: "mk_test_original",
+      signing_secret: "secret_fixture",
+    };
+    const load = vi.fn().mockResolvedValue({ rows: [{ rows: [credential], storedMode: "test" }] });
+    provider = new TestProvider(
+      { logger, __pg_connection__: { raw: load } },
+      { backendUrl: "https://shop.test" },
+    );
+    const original = new MockAdapter((await provider["client"]()).client);
+    let replacement: MockAdapter | undefined;
+    original.onGet(PAYMENT).replyOnce(async () => {
+      load.mockResolvedValue({
+        rows: [{ rows: [{ ...credential, api_key: "mk_test_replacement" }], storedMode: "test" }],
+      });
+      clearCredentialsCache();
+      replacement = new MockAdapter((await provider["client"]()).client);
+      replacement.onGet(PAYMENT).reply(200, fetched({ status: "PENDING" }));
+      return [200, fetched()];
+    });
+    original.onGet(PAYMENT).reply(200, fetched({ status: "SUCCEEDED" }));
+    original.onPost(`${PAYMENT}/capture`).networkError();
+
+    await expect(provider.capturePayment({ data: storedData })).resolves.toMatchObject({
+      data: { status: "SUCCEEDED" },
+    });
+    expect(original.history.get).toHaveLength(2);
+    expect(original.history.post.map((request) => request.url)).toEqual([`${PAYMENT}/capture`]);
+    expect(replacement?.history).toHaveLength(0);
+
+    await expect(provider.getPaymentStatus({ data: storedData })).resolves.toMatchObject({
+      data: { status: "PENDING" },
+    });
+    expect(replacement?.history.get).toHaveLength(1);
+  });
+
   it("returns explicit data without a capture request when already SUCCEEDED", async () => {
     // Bugs: a second capture that MONEI refuses fails an auto-captured payment;
     // returning the fetched payment leaks `paymentToken` through `payment.data`.

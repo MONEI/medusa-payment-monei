@@ -1,5 +1,7 @@
 export type MoneiOptions = {
   apiKey?: string;
+  /** Signing secret of a MONEI account webhook, for account events such as dashboard captures. */
+  accountWebhookSigningSecret?: string;
   /** Partner accounts only: the merchant account to act for. */
   accountId?: string;
   /**

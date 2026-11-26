@@ -9,6 +9,7 @@ import MoneiCardService from "../src/providers/monei/services/monei-card";
 import MoneiMbwayService from "../src/providers/monei/services/monei-mbway";
 import MoneiMultibancoService from "../src/providers/monei/services/monei-multibanco";
 import MoneiPaypalService from "../src/providers/monei/services/monei-paypal";
+import { emptyCredentialsStore } from "./helpers";
 
 // `pnpm test` runs `medusa plugin:build` first, so these read the real build output.
 const root = join(__dirname, "..");
@@ -81,7 +82,7 @@ describe("payment method providers", () => {
     "$method sends only its method and $transactionType with capture false",
     async ({ Service, method, transactionType }) => {
       const provider = new Service(
-        { logger: { warn: vi.fn(), info: vi.fn() } },
+        { logger: { warn: vi.fn(), info: vi.fn() }, __pg_connection__: emptyCredentialsStore },
         { apiKey: "pk_test_x", backendUrl: "https://shop.test", capture: false },
       );
       const mock = new MockAdapter((await provider["client"]()).client);

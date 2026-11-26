@@ -1,8 +1,8 @@
 import type { ConfigModule, Logger, MedusaContainer } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
-import { MoneiNotConnectedError } from "../providers/monei/core/client";
+import { NOT_CONNECTED } from "../providers/monei/core/client";
 import { callMonei } from "../providers/monei/core/errors";
-import { moneiClient } from "../providers/monei/core/scope";
+import { moneiClient, moneiCredentials } from "../providers/monei/core/scope";
 
 // Medusa's project template puts the docs site in STORE_CORS.
 const IGNORED_HOSTS = new Set(["docs.medusajs.com"]);
@@ -38,14 +38,12 @@ export default async function moneiApplePayDomains(container: MedusaContainer) {
     .projectConfig.http;
   const domains = storefrontDomains(storeCors);
   if (!domains.length) return;
-  let client;
-  try {
-    client = await moneiClient(container);
-  } catch (error) {
-    if (!(error instanceof MoneiNotConnectedError)) throw error;
-    logger.warn(`MONEI Apple Pay: ${error.message}`);
+  const credentials = await moneiCredentials(container);
+  if (!credentials.apiKey) {
+    logger.warn(`MONEI Apple Pay: ${NOT_CONNECTED}`);
     return;
   }
+  const client = await moneiClient(container, credentials);
   for (const domainName of domains) {
     try {
       await callMonei("register Apple Pay domain", () =>

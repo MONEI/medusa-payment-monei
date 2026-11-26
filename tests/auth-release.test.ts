@@ -5,7 +5,7 @@ import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
 import { validateOptions } from "../src/providers/monei/core/client";
 import release, { config } from "../src/subscribers/monei-hold-release";
 import reconcile, { config as reconcileConfig } from "../src/subscribers/monei-payment-reconcile";
-import { API_KEY, fakeGraph, sign } from "./helpers";
+import { emptyCredentialsStore, API_KEY, fakeGraph, sign } from "./helpers";
 
 const shared = vi.hoisted(() => ({ client: undefined as unknown }));
 vi.mock("../src/providers/monei/core/client", async (importOriginal) => ({
@@ -33,6 +33,7 @@ let acquire: ReturnType<typeof vi.fn>;
 let lockRelease: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let providerOptions: Record<string, unknown>;
+let readCredentials: ReturnType<typeof vi.fn>;
 let container: { resolve: (key: string) => unknown };
 
 beforeEach(clearCredentialsCache);
@@ -42,7 +43,14 @@ beforeEach(() => {
   shared.client = client;
   mock = new MockAdapter(client.client);
   tables = {
-    payment_session: [{ id: "payses_1", data: { id: "pay_1" }, payment_collection_id: "paycol_1" }],
+    payment_session: [
+      {
+        id: "payses_1",
+        provider_id: "pp_monei_monei",
+        data: { id: "pay_1" },
+        payment_collection_id: "paycol_1",
+      },
+    ],
     cart_payment_collection: [{ cart_id: "cart_1", payment_collection_id: "paycol_1" }],
     order_cart: [],
     customer: [],
@@ -53,7 +61,9 @@ beforeEach(() => {
   lockRelease = vi.fn();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   providerOptions = { apiKey: API_KEY, backendUrl: "https://shop.test" };
+  readCredentials = vi.fn(emptyCredentialsStore.raw);
   const deps: Record<string, unknown> = {
+    __pg_connection__: { raw: readCredentials },
     query: { graph: fakeGraph(tables) },
     logger,
     event_bus: { emit },
@@ -245,5 +255,33 @@ describe("hold release: re-check", () => {
       name: "monei.hold_release_failed",
       data: expect.objectContaining({ payment_id: "pay_1", reason: "db down" }),
     });
+  });
+
+  it.each([
+    ["disconnect leaves no active key", /MONEI is not connected/],
+    ["credential query fails", /database unavailable/],
+  ] as const)("reports an outstanding hold when %s", async (failure, reason) => {
+    if (failure === "credential query fails") {
+      readCredentials.mockRejectedValueOnce(new Error("database unavailable"));
+    } else {
+      delete providerOptions.apiKey;
+    }
+
+    await runCheck();
+
+    expect(emit).toHaveBeenCalledExactlyOnceWith({
+      name: "monei.hold_release_failed",
+      data: {
+        payment_id: "pay_1",
+        session_id: "payses_1",
+        cart_id: "cart_1",
+        amount: null,
+        currency: null,
+        reason: expect.stringMatching(reason),
+      },
+    });
+    expect(lockRelease).toHaveBeenCalledOnce();
+    expect(deletePaymentSession).not.toHaveBeenCalled();
+    expect(mock.history.get).toHaveLength(0);
   });
 });

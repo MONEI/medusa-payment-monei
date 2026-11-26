@@ -144,6 +144,20 @@ describe("credentials in effect", () => {
       storedMode: "live",
       expected: { mode: "live", apiKey: live.api_key, source: "connected" },
     },
+    {
+      bug: "a backend without a stored mode silently enables its connected Live key",
+      apiKey: undefined,
+      rows: [live],
+      storedMode: null,
+      expected: { mode: null, apiKey: undefined, source: null },
+    },
+    {
+      bug: "a disconnected Test backend silently falls back to its connected Live key",
+      apiKey: undefined,
+      rows: [live],
+      storedMode: "test",
+      expected: { mode: "test", apiKey: undefined, source: null },
+    },
   ] as const)("prevents $bug", async ({ apiKey, rows, storedMode, expected }) => {
     const { knex } = database(snapshot([...rows], storedMode));
 
@@ -161,6 +175,15 @@ describe("credentials in effect", () => {
 
     await expect(provider.getPaymentStatus({ data: { id: "pay_1" } })).rejects.toThrow(
       "MONEI is not connected: connect it in Settings → MONEI or set MONEI_API_KEY",
+    );
+    expect(createMoneiClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing PostgreSQL registration instead of silently choosing the env key", async () => {
+    const provider = new TestProvider({ logger }, { backendUrl, apiKey: "pk_test_fixture" });
+
+    await expect(provider.getPaymentStatus({ data: { id: "pay_1" } })).rejects.toThrow(
+      "MONEI credentials require the Medusa PostgreSQL connection",
     );
     expect(createMoneiClient).not.toHaveBeenCalled();
   });
@@ -246,6 +269,9 @@ describe("credential cache", () => {
   });
 
   it("keeps checkout on the env key before migration and warns only once across reloads", async () => {
+    vi.resetModules();
+    const { loadCredentials, clearCredentialsCache } =
+      await import("../src/providers/monei/core/credentials");
     const { knex, raw } = database();
     raw.mockRejectedValue(Object.assign(new Error("missing table"), { code: "42P01" }));
     const options = { apiKey: "pk_test_env_fixture" };

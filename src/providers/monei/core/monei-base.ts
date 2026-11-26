@@ -379,8 +379,8 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     }
     let status: string | undefined;
     let amount: string | undefined;
-    const client = await this.client();
     try {
+      const client = await this.client();
       const payment = await client.payments.get(id);
       // Core passes only `data`, never the deleted session's id, and `data` may not come
       // from this provider: cancel only a payment that belongs to the named session.
@@ -596,14 +596,17 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     const unsupported = { action: PaymentActions.NOT_SUPPORTED } as const;
     const credentials = await this.credentials();
     const lookup = this.container.paymentSessionService as SessionLookup;
+    const providerId = `pp_${this.getIdentifier()}_${PROVIDER_ID}`;
     const callback = await verifyWebhook(credentials, payload, {
       client: () => clientForCredentials(this, credentials),
       logger: this.logger_,
+      providerId,
+      accountWebhookSigningSecret: this.options_.accountWebhookSigningSecret,
       findSession: async (id) => (await lookup.list({ id }, { relations: ["payment"] }))[0],
     });
     if (!callback) return unsupported;
 
-    const { payment, verified } = callback;
+    const { payment } = callback;
     const sessionId = sessionIdOf(payment.orderId);
     if (!sessionId) {
       ignoreWebhook(
@@ -613,10 +616,21 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
       );
       return unsupported;
     }
-    // The callback of a deleted session must not complete any cart. The reconcile
-    // subscriber reports the orphan payment.
-    if (verified && !(await lookup.list({ id: sessionId }, { select: ["id"] })).length) {
+    // Re-read after the fetch: Medusa uses the session's current payment to settle.
+    const [session] = await lookup.list(
+      { id: sessionId },
+      { select: ["id", "provider_id", "data"] },
+    );
+    if (!session) {
       ignoreWebhook(this.logger_, `session ${sessionId} no longer exists`, payment.id);
+      return unsupported;
+    }
+    if (session.provider_id !== providerId || session.data?.id !== payment.id) {
+      ignoreWebhook(
+        this.logger_,
+        `session ${sessionId} does not belong to this provider and payment`,
+        payment.id,
+      );
       return unsupported;
     }
     return {

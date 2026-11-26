@@ -2,7 +2,7 @@ import type { InitiatePaymentInput } from "@medusajs/framework/types";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
-import { moneiError, TestProvider } from "./helpers";
+import { emptyCredentialsStore, moneiError, TestProvider } from "./helpers";
 
 const PAYMENTS = "https://api.monei.com/v1/payments";
 const SESSION_ID = "payses_01";
@@ -31,7 +31,7 @@ beforeEach(async () => {
     ),
   };
   provider = new TestProvider(
-    { logger, paymentSessionService },
+    { logger, paymentSessionService, __pg_connection__: emptyCredentialsStore },
     { apiKey: "pk_test_x", backendUrl: "https://shop.test/medusa/" },
   );
   mock = new MockAdapter((await provider["client"]()).client);
@@ -110,7 +110,7 @@ describe("initiatePayment", () => {
   it("sends AUTH when capture is false and the provider allows it", async () => {
     // Bug: `capture: false` ignored, so card and PayPal charge at once.
     const authProvider = new TestProvider(
-      { logger },
+      { logger, __pg_connection__: emptyCredentialsStore },
       { apiKey: "pk_test_x", backendUrl: "https://shop.test", capture: false },
     );
     mock = new MockAdapter((await authProvider["client"]()).client);
@@ -302,6 +302,16 @@ describe("updatePayment", () => {
 
 describe("deletePayment", () => {
   const sessionData = { id: "pay_1", session_id: SESSION_ID };
+
+  it("lets a cart change proceed when the credential query fails", async () => {
+    provider["container"].__pg_connection__ = {
+      raw: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    };
+
+    await expect(provider.deletePayment({ data: sessionData })).resolves.toEqual({});
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("database unavailable"));
+    expect(mock.history.post).toHaveLength(0);
+  });
 
   it.each(["AUTHORIZED", "PENDING"])(
     "cancels a %s payment of this session once",

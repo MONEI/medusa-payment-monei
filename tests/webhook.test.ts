@@ -1,25 +1,34 @@
 import MockAdapter from "axios-mock-adapter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
-import { API_KEY, hmac, MONEI_PAYMENT_ID, sign, signV2, T, TestProvider } from "./helpers";
+import { createMoneiClient } from "../src/providers/monei/core/client";
+import {
+  API_KEY,
+  emptyCredentialsStore,
+  hmac,
+  MONEI_PAYMENT_ID,
+  sign,
+  signV2,
+  T,
+  type TestProvider,
+} from "./helpers";
 
 const mocks = vi.hoisted(() => new Map<string, MockAdapter>());
 vi.mock("../src/providers/monei/core/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/monei/core/client")>();
   return {
     ...actual,
-    createMoneiClient: (options: Parameters<typeof actual.createMoneiClient>[0]) => {
+    createMoneiClient: vi.fn((options: Parameters<typeof actual.createMoneiClient>[0]) => {
       const client = actual.createMoneiClient(options);
       mocks.set(options.apiKey, new MockAdapter(client.client));
       return client;
-    },
+    }),
   };
 });
 
 const SESSION_ID = "payses_01";
 const PAYMENT = `https://api.monei.com/v1/payments/${MONEI_PAYMENT_ID}`;
 const OTHER_ID = "abcdef0123456789abcdef0123456789abcdef01";
-const LIVE_KEY = "pk_live_x";
+const LIVE_KEY = "mk_live_x";
 const CONNECTED_KEY = "mk_test_x";
 const SECRET = "mksec_test_fixture";
 
@@ -50,45 +59,62 @@ let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let provider: TestProvider;
 let mock: MockAdapter;
 let paymentSessionService: { list: ReturnType<typeof vi.fn> };
-let clock = Date.now();
+let Provider: typeof TestProvider;
+const session = (id = SESSION_ID, paymentId = MONEI_PAYMENT_ID) => ({
+  id,
+  provider_id: "pp_monei_monei",
+  data: { id: paymentId },
+});
 
 async function useCredentials(
-  apiKey: string,
-  options: { connected?: boolean; accountId?: string } = {},
+  apiKey: string | undefined,
+  {
+    mode,
+    key,
+    accountId,
+    accountWebhookSigningSecret,
+  }: {
+    mode?: "live" | "test";
+    key?: string;
+    accountId?: string;
+    accountWebhookSigningSecret?: string;
+  } = {},
 ) {
-  const rows = options.connected
+  const connectedKey = mode ? (key ?? CONNECTED_KEY) : undefined;
+  const rows = connectedKey
     ? [
         {
           id: "credential",
-          mode: "test",
+          mode,
           account_id: "merchant",
-          api_key: CONNECTED_KEY,
+          api_key: connectedKey,
           signing_secret: SECRET,
         },
       ]
     : [];
-  provider = new TestProvider(
+  provider = new Provider(
     {
       logger,
       paymentSessionService,
-      __pg_connection__: { raw: async () => ({ rows: [{ rows, storedMode: "test" }] }) },
+      __pg_connection__: { raw: async () => ({ rows: [{ rows, storedMode: mode ?? null }] }) },
     },
-    { apiKey, accountId: options.accountId, backendUrl: "https://shop.test" },
+    { apiKey, accountId, accountWebhookSigningSecret, backendUrl: "https://shop.test" },
   );
   await provider["client"]();
-  mock = mocks.get(options.connected ? CONNECTED_KEY : apiKey)!;
+  mock = mocks.get((connectedKey ?? apiKey)!)!;
   mock.onGet(PAYMENT).reply(200, fetched());
 }
 
 beforeEach(async () => {
-  clearCredentialsCache();
+  vi.resetModules();
+  ({ TestProvider: Provider } = await import("./helpers"));
+  vi.mocked(createMoneiClient).mockClear();
   mocks.clear();
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime((clock += 120_000));
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   // Only SESSION_ID exists in Medusa.
   paymentSessionService = {
-    list: vi.fn(async ({ id }: { id: string }) => (id === SESSION_ID ? [{ id }] : [])),
+    list: vi.fn(async ({ id }: { id: string }) => (id === SESSION_ID ? [session()] : [])),
   };
   await useCredentials(API_KEY);
 });
@@ -127,6 +153,10 @@ describe("getWebhookActionAndData: signature", () => {
       action: "captured",
       data: { session_id: SESSION_ID, amount: 19.99 },
     });
+    expect(logger.info).toHaveBeenCalledExactlyOnceWith(
+      `MONEI callback verified (v1) payment=${MONEI_PAYMENT_ID}`,
+    );
+    expect(mock.history.get).toHaveLength(1);
   });
 
   it("accepts rawData as a JSON-serialized Buffer", async () => {
@@ -138,6 +168,10 @@ describe("getWebhookActionAndData: signature", () => {
       action: "captured",
       data: { session_id: SESSION_ID, amount: 19.99 },
     });
+    expect(logger.info).toHaveBeenCalledExactlyOnceWith(
+      `MONEI callback verified (v1) payment=${MONEI_PAYMENT_ID}`,
+    );
+    expect(mock.history.get).toHaveLength(1);
   });
 
   it.each([
@@ -164,7 +198,7 @@ describe("getWebhookActionAndData: signature", () => {
   );
 
   it("lets a current v2 callback through without spending any fallback slots", async () => {
-    await useCredentials(API_KEY, { connected: true });
+    await useCredentials(API_KEY, { mode: "test" });
     const signed = paymentBody({ orderId: "not_used_for_signed_callbacks" });
     await expect(
       webhook(signed, { "monei-signature": signV2(signed, SECRET) }),
@@ -185,7 +219,7 @@ describe("getWebhookActionAndData: signature", () => {
   });
 
   it("checks v1 with the env key when v2 is unknown and fetches with the connected key", async () => {
-    await useCredentials(API_KEY, { connected: true });
+    await useCredentials(API_KEY, { mode: "test" });
     const signed = paymentBody({ orderId: "not_used_for_signed_callbacks" });
     const signature = `${sign(signed)},v2=${hmac(signed, "old_secret")}`;
 
@@ -196,6 +230,8 @@ describe("getWebhookActionAndData: signature", () => {
       `MONEI callback verified (v1) payment=${MONEI_PAYMENT_ID}`,
     );
     expect(mock.history.get).toHaveLength(1);
+    expect(createMoneiClient).toHaveBeenCalledWith({ apiKey: API_KEY });
+    expect(mocks.get(API_KEY)!.history.get).toHaveLength(0);
   });
 
   it("accepts a partner v1 callback for a live merchant on a test master key", async () => {
@@ -242,6 +278,17 @@ describe("getWebhookActionAndData: fetched payment", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("payses_deleted"));
   });
 
+  it.each([
+    ["payment was replaced", { data: { id: OTHER_ID } }],
+    ["session belongs to another provider", { provider_id: "pp_monei-paypal_monei" }],
+  ])("does not settle a verified callback when the %s", async (_, change) => {
+    paymentSessionService.list.mockResolvedValue([{ ...session(), ...change }]);
+
+    await expect(webhook(body, { "monei-signature": sign(body) })).resolves.toEqual(NOT_SUPPORTED);
+    expect(mock.history.get).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("this provider and payment"));
+  });
+
   it("throws when the payment cannot be fetched", async () => {
     // Bug: returning not_supported drops a paid callback; a throw lets the event bus retry.
     mock.onGet(PAYMENT).reply(503, { message: "Service Unavailable" });
@@ -271,6 +318,34 @@ const envelope = (overrides: Record<string, unknown> = {}) =>
 const fetchedUrls = () => mock.history.get.map((request) => request.url);
 
 describe("getWebhookActionAndData: account-webhook event", () => {
+  it("settles a dashboard capture signed with the account webhook secret on a connected-only backend", async () => {
+    const secret = "whsec_fixture";
+    await useCredentials(undefined, { mode: "test", accountWebhookSigningSecret: secret });
+    paymentSessionService.list.mockResolvedValue([
+      { ...session(), authorized_at: new Date(), payment: { captured_at: null } },
+    ]);
+    const raw = envelope({ type: "charge.captured" });
+
+    await expect(webhook(raw, { "monei-signature": signV2(raw, secret) })).resolves.toMatchObject({
+      action: "captured",
+    });
+    expect(logger.info).toHaveBeenCalledExactlyOnceWith(
+      `MONEI callback verified (v2) payment=${MONEI_PAYMENT_ID}`,
+    );
+    expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
+  it("does not use an account webhook secret to verify a bare payment callback", async () => {
+    const secret = "whsec_fixture";
+    await useCredentials(undefined, { mode: "test", accountWebhookSigningSecret: secret });
+    const raw = paymentBody({ orderId: "payses_deleted" });
+
+    await expect(webhook(raw, { "monei-signature": signV2(raw, secret) })).resolves.toEqual(
+      NOT_SUPPORTED,
+    );
+    expect(mock.history.get).toHaveLength(0);
+  });
+
   it("fetches the event's payment, never the event id", async () => {
     // Bug: the event id is fetched as a payment id (404, the event bus retries
     // forever) or the envelope's charge fields are used as the payment.
@@ -367,15 +442,15 @@ describe.each([
   ["event envelope", envelope],
 ] as const)("getWebhookActionAndData: verified %s mode", (_, makeBody) => {
   it.each([
-    ["a Test callback on a Live backend", LIVE_KEY, false],
-    ["a Live callback on a Test backend", API_KEY, true],
-    ["a callback that omits its mode", API_KEY, undefined],
-    ["a callback with a string instead of a boolean mode", API_KEY, "false"],
-  ] as const)("refuses %s even with a valid signature", async (_, key, livemode) => {
-    await useCredentials(key);
+    ["a Test callback on a Live backend", "live", false],
+    ["a Live callback on a Test backend", "test", true],
+    ["a callback that omits its mode", "test", undefined],
+    ["a callback with a string instead of a boolean mode", "test", "false"],
+  ] as const)("refuses %s even with a valid signature", async (_, mode, livemode) => {
+    await useCredentials(undefined, { mode, key: mode === "live" ? LIVE_KEY : CONNECTED_KEY });
     const raw = makeBody({ livemode });
 
-    await expect(webhook(raw, { "monei-signature": sign(raw, key) })).resolves.toEqual(
+    await expect(webhook(raw, { "monei-signature": signV2(raw, SECRET) })).resolves.toEqual(
       NOT_SUPPORTED,
     );
     expect(mock.history.get).toHaveLength(0);
@@ -384,11 +459,32 @@ describe.each([
 });
 
 describe("getWebhookActionAndData: fetch fallback", () => {
+  it("keeps settlement quota for the current payment when unsigned callbacks name an unrelated id", async () => {
+    for (let index = 0; index < 6; index++) {
+      await expect(webhook(paymentBody({ id: OTHER_ID, updatedAt: index }), {})).resolves.toEqual(
+        NOT_SUPPORTED,
+      );
+    }
+    expect(fetchedUrls()).toEqual([]);
+    await expect(webhook(body, {})).resolves.toMatchObject({ action: "captured" });
+    expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
+  it("does not settle a payment replaced during a fallback fetch", async () => {
+    mock.onGet(PAYMENT).reply(() => {
+      paymentSessionService.list.mockResolvedValue([{ ...session(), data: { id: OTHER_ID } }]);
+      return [200, fetched()];
+    });
+
+    await expect(webhook(body, {})).resolves.toEqual(NOT_SUPPORTED);
+    expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
   it.each([
     ["a revoked signing key", { "monei-signature": signV2(body, "old_secret") }],
     ["a missing v2 signature", { "monei-signature": sign(body, CONNECTED_KEY) }],
   ])("settles an open session after %s with the current key", async (_, headers) => {
-    await useCredentials(API_KEY, { connected: true });
+    await useCredentials(API_KEY, { mode: "test" });
 
     await expect(webhook(body, headers)).resolves.toEqual({
       action: "captured",
@@ -440,10 +536,10 @@ describe("getWebhookActionAndData: fetch fallback", () => {
     },
   );
 
-  it("captures an authorized Medusa payment that MONEI captured in its dashboard", async () => {
+  it("lets fallback settle a capture when the Medusa payment is still authorized", async () => {
     paymentSessionService.list.mockResolvedValue([
       {
-        id: SESSION_ID,
+        ...session(),
         authorized_at: new Date(),
         payment: { captured_at: null, canceled_at: null },
       },
@@ -476,14 +572,15 @@ describe("getWebhookActionAndData: fetch fallback", () => {
   });
 
   it("returns not_supported without constructing a client when the backend has no key", async () => {
-    provider = new TestProvider(
-      { logger, paymentSessionService },
+    provider = new Provider(
+      { logger, paymentSessionService, __pg_connection__: emptyCredentialsStore },
       { backendUrl: "https://shop.test" },
     );
 
+    vi.mocked(createMoneiClient).mockClear();
     await expect(webhook(body, {})).resolves.toEqual(NOT_SUPPORTED);
     expect(paymentSessionService.list).not.toHaveBeenCalled();
-    expect(mock.history.get).toHaveLength(0);
+    expect(createMoneiClient).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("not connected"));
   });
 
@@ -494,6 +591,31 @@ describe("getWebhookActionAndData: fetch fallback", () => {
 
     await expect(webhook(body, {})).rejects.toMatchObject({ type: "unexpected_state" });
     await expect(webhook(body, {})).resolves.toMatchObject({ action: "captured" });
+    expect(fetchedUrls()).toEqual([PAYMENT, PAYMENT]);
+  });
+
+  it("fetches with the replacement key when the same delivery arrives after reconnect", async () => {
+    const headers = { "monei-signature": signV2(body, "old_secret") };
+    await useCredentials(undefined, { mode: "test" });
+    const original = mock;
+    await expect(webhook(body, headers)).resolves.toMatchObject({ action: "captured" });
+
+    await useCredentials(undefined, { mode: "test", key: "mk_test_replacement" });
+    mock.onGet(PAYMENT).reply(200, fetched({ status: "AUTHORIZED" }));
+
+    await expect(webhook(body, headers)).resolves.toMatchObject({ action: "authorized" });
+    expect(original.history.get).toHaveLength(1);
+    expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
+  it("refreshes a successful fallback after its minute-long memo expires", async () => {
+    await expect(webhook(body, {})).resolves.toMatchObject({ action: "captured" });
+    mock.onGet(PAYMENT).reply(200, fetched({ status: "AUTHORIZED" }));
+    vi.setSystemTime(Date.now() + 59_000);
+    await expect(webhook(body, {})).resolves.toMatchObject({ action: "captured" });
+    expect(fetchedUrls()).toEqual([PAYMENT]);
+    vi.setSystemTime(Date.now() + 2_000);
+    await expect(webhook(body, {})).resolves.toMatchObject({ action: "authorized" });
     expect(fetchedUrls()).toEqual([PAYMENT, PAYMENT]);
   });
 
@@ -515,17 +637,20 @@ describe("getWebhookActionAndData: fetch fallback", () => {
         action: "captured",
       });
     }
-    await expect(webhook(body, {})).resolves.toEqual(NOT_SUPPORTED);
+    const waiting = webhook(body, {});
+    await vi.advanceTimersByTimeAsync(59_999);
     expect(mock.history.get).toHaveLength(5);
-    expect(logger.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("quota exceeded"));
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("deferred"));
 
-    vi.setSystemTime((clock += 61_000));
-    await expect(webhook(body, {})).resolves.toMatchObject({ action: "captured" });
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(waiting).resolves.toMatchObject({ action: "captured" });
     expect(mock.history.get).toHaveLength(6);
   });
 
   it("limits distinct sessions to sixty fallback fetches in a minute", async () => {
-    paymentSessionService.list.mockImplementation(async ({ id }) => [{ id }]);
+    paymentSessionService.list.mockImplementation(async ({ id }) => [
+      session(id, Number(id.slice("payses_".length)).toString(16).padStart(32, "0")),
+    ]);
     const attempt = async (index: number) => {
       const orderId = `payses_${index}`;
       const id = index.toString(16).padStart(32, "0");
@@ -535,12 +660,26 @@ describe("getWebhookActionAndData: fetch fallback", () => {
     for (let index = 0; index < 60; index++) {
       await expect(attempt(index)).resolves.toMatchObject({ action: "captured" });
     }
-    await expect(attempt(60)).resolves.toEqual(NOT_SUPPORTED);
+    const waiting = attempt(60);
+    await vi.advanceTimersByTimeAsync(59_999);
     expect(mock.history.get).toHaveLength(60);
-    expect(logger.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("quota exceeded"));
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("deferred"));
 
-    vi.setSystemTime((clock += 61_000));
-    await expect(attempt(60)).resolves.toMatchObject({ action: "captured" });
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(waiting).resolves.toMatchObject({ action: "captured" });
     expect(mock.history.get).toHaveLength(61);
+  });
+
+  it("drops a deferred fallback when its session is repointed while it waits", async () => {
+    for (let index = 0; index < 5; index++) {
+      await webhook(paymentBody({ updatedAt: index }), {});
+    }
+    const waiting = webhook(body, {});
+    await vi.advanceTimersByTimeAsync(1);
+    paymentSessionService.list.mockResolvedValue([session(SESSION_ID, OTHER_ID)]);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await expect(waiting).resolves.toEqual(NOT_SUPPORTED);
+    expect(mock.history.get).toHaveLength(5);
   });
 });
