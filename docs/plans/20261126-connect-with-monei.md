@@ -169,8 +169,9 @@
   - the switch on real Postgres, through a test-only `medusa exec` script in the backend container
     (`e2e/backend/src/scripts/monei-switch.ts`) that calls the module's `switchCredentials`; every row
     deletes the `monei_*` rows in `finally`:
-    - Test twice with different secrets ⇒ one Test row with the second key, both secrets stored;
-    - Test again with a secret already stored ⇒ no unique error, the credential row replaced;
+    - Test twice with different secrets ⇒ one Test row with the second key, both secrets stored;    - Test again with a secret already stored ⇒ no unique error, the credential row replaced;
+    - Live with `liveBasis` = a connected row id while no Live row exists (a Disconnect in between) ⇒
+      `temporarily_unavailable`, no row written;
     - a stored Live row of account A, then Live of B plus Test ⇒ `otherAccount`, the Live row
       unchanged, no Test row;
     - the advisory lock, deterministic: psql opens `BEGIN; SELECT pg_advisory_xact_lock(K)`, inserts a
@@ -182,8 +183,9 @@
     with a seeded connected Test row (the real `pk_test_` key) ⇒ a hosted-page payment completes
     through the return page, and the backend log has
     the "unverified callback" error for its payment (no `v2` can match a seeded secret, and there is no
-    env key for `v1`). So this spec covers the outbound key path only; `v2` is covered by unit tests and
-    the manual e2e;
+    env key for `v1`). So this spec covers the outbound key path only; `v2` is covered by unit tests and    the manual e2e. A second row in that file: pay without following the return page, then post the
+    payment's body to `/hooks/payment/monei_monei` with a `v2` the spec signs with the seeded secret ⇒
+    the order is created (the real webhook pipeline accepts a stored secret);
   - the existing env-key payment specs pass unchanged.
   - Not in e2e: an upgrade without `db:migrate` (the e2e backend runs `medusa db:migrate` on every
     start); the `42P01` unit row covers it.
@@ -227,9 +229,11 @@
       redirect_uri, now() - created_at > interval '20 minutes' AS expired`. A `state` is single-use also
       under concurrency, an expired row is deleted too, and the caller can tell `expired` from
       `unknownState`.
-    - `deleteOldStates()`: `DELETE … WHERE created_at < now() - interval '20 minutes'`.
-    - `switchCredentials(results)`: one transaction that takes `pg_advisory_xact_lock` (a constant
-      key), re-reads the stored Live row past every cache, runs the stored-Live account check, then per
+    - `deleteOldStates()`: `DELETE … WHERE created_at < now() - interval '20 minutes'`.    - `switchCredentials(results, liveBasis)`: one transaction that takes `pg_advisory_xact_lock` (a
+      constant key), re-reads the stored Live row past every cache, refuses with
+      `temporarily_unavailable` when that row is not the one `completeConnect` based its Live decision
+      on (`liveBasis`: the connected row's id, or "none, env checked"; a Disconnect or another connect in
+      between), runs the stored-Live account check, then per
       proven mode deletes the old row and creates the new one with the generated methods, and creates
       the secret row unless it exists. Two concurrent connects therefore run one after the other.
     - `disconnect()`: deletes both credential rows and every `state` row; keeps the secrets.
@@ -282,8 +286,10 @@
   `redirectUri` when `canonicalRedirectUri` throws, a `callbackProblem` code, or null). Never a full key
   or secret.
 - **Disconnect** `DELETE /admin/monei/connect` (authenticated admin): an HTML form cannot send DELETE,
-  and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It runs
-  `disconnect()`, clears the cache, and answers the dashboard API keys URL. The keys stay active until
+  and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It runs  `disconnect()`, clears the cache, and answers the dashboard API keys URL. Without an env key of the
+  same mode, Disconnect leaves no key: checkout, capture, cancel, refund and callbacks of existing
+  orders stop until a new connect or `MONEI_API_KEY`. The page's confirmation and the README say so in
+  those words. The keys stay active until
   the merchant revokes them there. An env key is never touched.
 - **Revoking and removing old keys:** MONEI deletes a revoked key, and the callbacks of the payments it
   made then carry only `v1` (the account `pk_` key). Payments made with an env `pk_` key never carry
@@ -360,7 +366,9 @@
     a backend without an env key such a callback is dropped, and an asynchronous payment (Multibanco,
     MB WAY, a closed tab) stays open in Medusa while MONEI shows it paid. The user decides whether to
     keep the drop or to fetch unverified callbacks on such a backend (the PHP behaviour: format check,
-    session must exist, quota); Stage 5 question.
+    session must exist, quota); Stage 5 question.  - Known gap: a reconnect that replaces a connected Test row of account A with Test account B (Test
+    accounts are not checked) strands A's open test payments the same way: their `v2` verifies with
+    A's kept secret, then the fetch with B's key gets a 404.
   - Known gap, kept as in PHP: env `pk_test_` of account A plus a connected Test key of account B (Test
     accounts are not checked). A payment made with A before the connect verifies by `v1`, then its fetch
     with B's key gets a 404.
@@ -449,15 +457,16 @@ task's list, so a Sylius-first run cannot ship a subset.
   `connect.ts`), `README.md`
 
 - [ ] `Connect.start(client, redirectUri, baseUrl?)` ⇒ `{url, state, verifier}`; `Connect.exchange(code,
-      verifier, client, redirectUri, baseUrl?)` (form body, no `Authorization`, 35 s timeout, the PHP
-      error mapping); `Connect.canonicalRedirectUri(uri)` (WHATWG `URL`, which gives non-transitional
+      verifier, client, redirectUri, baseUrl?)` (form body, no `Authorization`, 35 s timeout, no
+      redirects followed (`maxRedirects: 0`, as the PHP SDK), the PHP error mapping); `Connect.canonicalRedirectUri(uri)` (WHATWG `URL`, which gives non-transitional
       punycode); `Connect.callbackProblem(client, redirectUri)` with the broker's order and codes and the
       `CLIENTS` mirror of every client
 - [ ] write tests: the PHP SDK Task 1 rows (moneiHost rows, pin rows of every client including
       `medusa` and `sylius`, host rows, length 512/513, label 63/64, host 253/254, `nameLength`
       300/301); the RFC 7636 appendix B vector; 403 ⇒ `access_denied`; a non-2xx without `error` ⇒
       `temporarily_unavailable`; the exact form fields and no `Authorization`; a 200 with only `errors`;
-      a truncated 200 ⇒ an error whose message holds no `mk_` or `mksec_` value; fresh `state` and
+      a truncated 200 ⇒ an error whose message holds no `mk_` or `mksec_` value; a 307 to another host ⇒
+      `temporarily_unavailable` and the other host gets no request; fresh `state` and
       verifier per call; `https://Shop.example:443/monei/connect` ⇒ `https://shop.example/monei/connect`
 - [ ] run tests — must pass before next task
 - [ ] Node SDK release (ask the user; release-it)
