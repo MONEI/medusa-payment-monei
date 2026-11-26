@@ -418,9 +418,14 @@ Sylius plan's Task 6 list is a subset today: it has no per-client scopes, no com
 `internals/apiKey.ts`, and no account-service, appsync-service or cognito-service. Whichever plan runs
 first does this whole task; the other marks it done with the PR links.
 
-**Gate:** stop and ask the user until (a) the Sylius plan has confirmed its callback form (today
-`/monei/connect`, `maxPrefix: 2`) and its scopes, and (b) the Sylius plan's Task 6 points at this
-task's list, so a Sylius-first run cannot ship a subset.
+**Gate:** held on 2026-11-26. The Sylius session confirmed `CLIENTS.sylius = {name: 'Sylius',
+callbacks: [{path: '/monei/connect', search: /^$/}], maxPrefix: 2, indexPhp: 0}`, with the shared
+scopes and no `customers:read`. Sylius routes for the cognito fixture: `payments` create, get,
+capture, cancel, refund; `POST /apple-pay/domains`; `GET /allowed-payment-methods`. Its Task 6 points
+at this task.
+
+➕ **Owner:** the Sylius session runs this task end to end (agreed 2026-11-26). This plan marks it done
+with its PR links and the common release version.
 
 **Files:**
 
