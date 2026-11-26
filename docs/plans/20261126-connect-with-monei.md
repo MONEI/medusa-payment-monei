@@ -75,7 +75,7 @@
 - Medusa core facts (2.22.3):
   - `POST /hooks/payment/:provider` emits the event and answers 200 before the provider runs
     (`@medusajs/medusa` `api/hooks/payment/[provider]/route.js`). A provider throw gets the Redis event
-    bus retries (`webhook_retries`, default 3, 5 s delay); the local event bus does not retry. MONEI
+    bus retries (`webhook_retries`, default 3; the 5 s `webhook_delay` applies to the first run only, and BullMQ retries with no backoff); the local event bus does not retry. MONEI
     never sees a 4xx or 5xx from the provider.
   - `/admin/*` routes need an authenticated user: session cookie, bearer JWT or a secret API key.
     The session cookie is `SameSite=Lax` in production and `false` in development
