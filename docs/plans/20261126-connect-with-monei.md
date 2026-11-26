@@ -183,6 +183,9 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
     deletes the `monei_*` rows in `finally`:
     - Test twice with different keys ⇒ one Test row with the second key; the stored mode is `test`;
     - then Live ⇒ a Live row, and the stored mode stays `test`;
+    - then Disconnect, then Live plus Test ⇒ the stored mode is still `test`;
+    - `setMode("live")` while a Disconnect holds the advisory lock ⇒ it waits, re-reads, and refuses
+      (no Live row);
     - Live with `liveBasis` = a connected row id while no Live row exists (a Disconnect in between) ⇒
       `temporarily_unavailable`, no row written;
     - a stored Live row of account A, then Live of B plus Test ⇒ `otherAccount`, the Live row
@@ -196,9 +199,11 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
     with a seeded connected Test row (the real `pk_test_` key) and stored mode `test` ⇒ a hosted-page
     payment whose return page is not followed still creates the order, and the backend log has the
     fallback line for its payment (no real `v2` can match a seeded secret, and there is no env key for
-    `v1`). Also in that file: `PUT …/mode` `{mode: "live"}` with only a Test row ⇒ refused. A second row: post that payment's body to `/hooks/payment/monei_monei` with a `v2` the spec
-    signs with the seeded secret ⇒ the order is created with no fallback log line (the real webhook
-    pipeline accepts the stored secret);
+    `v1`). Also in that file: `PUT …/mode` `{mode: "live"}` with only a Test row ⇒ refused. A second row: a payment created through the MONEI API with no `callbackUrl` (so no real callback
+    races it) for a fresh session, paid, then its body posted to `/hooks/payment/monei_monei` with a
+    `v2` the spec signs with the seeded secret ⇒ the session is authorized and the backend log has the
+    `v2` line for that payment id, and no fallback line (the real webhook pipeline accepts the stored
+    secret);
   - the existing env-key payment specs pass unchanged.
   - Not in e2e: an upgrade without `db:migrate` (the e2e backend runs `medusa db:migrate` on every
     start); the `42P01` unit row covers it.
@@ -249,8 +254,11 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
       proven mode deletes the old row and creates the new one with the generated methods, and sets the
       stored mode when none is set (Live if Live was proven, else Test). It never changes a stored mode.
       Two concurrent connects therefore run one after the other.
-    - `setMode(mode)`: sets the stored mode; refuses a mode without a credential row.
-    - `disconnect()`: deletes both credential rows, the stored mode and every `state` row.
+    - `setMode(mode)`: under the same advisory lock, re-reads the rows and sets the stored mode; refuses
+      a mode without a credential row.
+    - `disconnect()`: under the same advisory lock, deletes both credential rows and every `state` row.
+      It keeps the stored mode, so a backend set to Test stays on Test after a Disconnect and a
+      reconnect that returns both modes.
 - **Mode and key in effect** (the PHP rule "a connect never changes the mode"):
   - The env key's mode: `_test_` right after the key type (`pk_test_`, `mk_test_`) is test; any other
     key is live (an unknown prefix is never shadowed by a connected Test key).
@@ -302,6 +310,11 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
 - **Mode** `PUT /admin/monei/connect/mode` `{mode}` (authenticated admin): an HTML form cannot send PUT
   and a cross-origin PUT needs a preflight. Refused while an env key is set (the env key sets the
   mode) and for a mode without a connected row. Runs `setMode`, clears the cache.
+  - A switch moves every MONEI call to the other account, as the PHP test-mode switch does: open
+    payments of the old mode cannot be captured, canceled or refunded from Medusa, and their callbacks
+    fail the `livemode` check, until the mode is switched back. The page's confirmation says so. Routing
+    each payment by its own mode is out of scope.
+  - Other instances and the worker follow within 30 s (their cache). The confirmation says so too.
 - **Disconnect** `DELETE /admin/monei/connect` (authenticated admin): an HTML form cannot send DELETE,
   and a cross-origin fetch with DELETE needs a preflight, so no JSON guard is needed. It runs
   `disconnect()`, clears the cache, and answers the dashboard API keys URL. Without an env key of the
@@ -370,10 +383,15 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
      secret, which the plugin does not store). Before any fetch, in this order:
      - the payment id has the MONEI id format, and the body's `orderId` is a Medusa session id
        (`payses_…`); else refused, no fetch;
-     - that session exists and is not authorized yet (`authorized_at` empty): the fallback only
-       completes open sessions, so an unsigned replay cannot re-run a finished one; else refused;
+     - that session exists, and its Medusa payment (if any) is not captured or canceled: the fallback
+       completes an open session, or captures an authorized one that MONEI captured (AUTH captured in
+       the MONEI dashboard), and an unsigned replay cannot re-run a finished payment; else refused;
      - quota, per process: at most 5 fallback fetches a minute per session and 60 a minute in all;
        spent ⇒ refused with an error log (Medusa has no retry to wait for).
+     - one decision per payment id: the core webhook subscriber and the reconcile subscriber run for the
+       same event in one process, at the same time. The first caller takes the quota slot and fetches;
+       the second reuses that promise (an in-process memo keyed by payment id, 60 s). So one delivery
+       uses one slot, and both subscribers see the same result.
   5. Fetch the payment with the key in effect, once. For the fallback path: the fetched `id` and
      `orderId` must equal the body's, and the fetched `livemode` must equal the mode in effect; else
      refused. Then, as today, the fetched payment decides the action.
@@ -383,12 +401,17 @@ Each item says who decided it. The user confirmed every planner pick on 2026-11-
     refuses). So orphan payments (session gone or replaced) are reported only from verified
     callbacks.
   - Deviations from PHP: Medusa answers 200 before the provider runs, so a refusal is never retried by
-    MONEI; no forward-move table (the "session not authorized" rule covers the replay case, and core
-    owns the order state after authorization).
+    MONEI; no forward-move table (the "captured or canceled" rule covers the replay case, and core owns
+    the order state after that).
   - Known gap: a reconnect that replaces a connected Test row of account A with Test account B (Test
     accounts are not checked) strands A's open test payments: the fetch with B's key gets a 404.
   - Known gap, kept as in PHP: env `pk_test_` of account A plus a connected Test key of account B (Test
     accounts are not checked). A payment made with A before the connect fetches with B's key: 404.
+- **Card account holders by mode:** Medusa reuses a customer's card account holder across modes, but a
+  MONEI customer exists in one account only. `createAccountHolder` stores the mode in the holder's
+  `data`. A holder of the other mode is treated as no customer (no saved cards, the card is not saved),
+  and the reconcile subscriber never deletes a holder of the other mode on a 404. A holder without a
+  mode (made before this release) belongs to the env key's mode.
 - **Admin page** `src/admin/routes/settings/monei/page.tsx` (`defineRouteConfig`, Settings sidebar):
   status per mode (source, account, "•••• last4", which mode is in effect), Connect, Disconnect
   (confirm), a "Use Live" / "Use Test" switch when no env key is set and both modes are connected, and
@@ -426,6 +449,8 @@ at this task.
 
 ➕ **Owner:** the Sylius session runs this task end to end (agreed 2026-11-26). This plan marks it done
 with its PR links and the common release version.
+- PRs so far: https://github.com/MONEI/monei-php-sdk/pull/38 (PHP SDK mirror + test rows; merges after
+  the authorization-service PR).
 
 **Files:**
 
@@ -556,7 +581,8 @@ default.
 **Files:**
 
 - Modify: `src/providers/monei/core/webhook.ts`, `monei-base.ts` (`getWebhookActionAndData`),
-  `src/subscribers/monei-payment-reconcile.ts`, `tests/webhook.test.ts`, `tests/subscribers.test.ts`,
+  `src/subscribers/monei-payment-reconcile.ts`, `src/providers/monei/services/monei-card.ts`,
+  `src/providers/monei/core/ids.ts` (holder mode), `tests/webhook.test.ts`, `tests/subscribers.test.ts`,
   `tests/helpers.ts` (a `signV2` helper computed independently of the SDK; `livemode` in the callback
   fixtures)
 
@@ -573,13 +599,18 @@ default.
       refused
 - [ ] write fallback tests (each names its bug): an unverified body of an open session ⇒ fetched and
       the action returned (the revoked-key and missing-`v2` callbacks settle); a malformed payment id, or
-      an `orderId` that is not `payses_…` ⇒ refused, no fetch; an unknown session ⇒ refused, no fetch; an
-      authorized session ⇒ refused, no fetch (no replay of a finished session); a 6th fallback for one
+      an `orderId` that is not `payses_…` ⇒ refused, no fetch; an unknown session ⇒ refused, no fetch; a 6th fallback for one
       session within a minute, or a 61st in all ⇒ refused, no fetch, an error line, and one more after
-      61 s ⇒ fetched (fake timers); a fetched payment whose `id` or `orderId` differs from the body's ⇒
+      61 s ⇒ fetched (fake timers); the provider and the reconcile subscriber handling one unverified
+      delivery with one slot left ⇒ one fetch, both get the payment; an authorized session whose Medusa
+      payment is not captured and a fetched `SUCCEEDED` ⇒ the capture action; a session whose Medusa
+      payment is captured or canceled ⇒ refused, no fetch; a fetched payment whose `id` or `orderId` differs from the body's ⇒
       refused; a fetched `livemode` other than the mode ⇒ refused; a body id holding a newline ⇒ the id
       is not logged; a backend with no key at all ⇒ `NOT_SUPPORTED`, not a throw
 - [ ] the reconcile subscriber refuses what the provider refuses (one wiring row)
+- [ ] card holders by mode per the Solution Overview; write tests: a holder of the other mode ⇒ no
+      customer on the payment and no saved cards listed; a 404 for a holder of the other mode ⇒ the
+      holder stays; a holder without a mode on an env-key backend ⇒ used as today
 - [ ] run tests — must pass before next task
 
 ### Task 5: Connect service (start, exchange, switch)
