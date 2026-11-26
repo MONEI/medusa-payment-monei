@@ -173,8 +173,10 @@
     - Test again with a secret already stored ⇒ no unique error, the credential row replaced;
     - a stored Live row of account A, then Live of B plus Test ⇒ `otherAccount`, the Live row
       unchanged, no Test row;
-    - two script runs at once (`compose exec` ×2) with Live of A and Live of B on a backend without
-      Live ⇒ exactly one Live row, and the other run answers `otherAccount` (the advisory lock);
+    - the advisory lock, deterministic: psql opens `BEGIN; SELECT pg_advisory_xact_lock(K)`, inserts a
+      Live row of A and keeps the transaction open; the script starts with Live of B; psql commits ⇒
+      the script answers `otherAccount` and one Live row of A stays (without the lock the script does
+      not see A and fails on the unique index);
   - in its own file `e2e/specs/connect-key.spec.ts`: a backend restarted without `MONEI_API_KEY` and
     with a seeded connected Test row (the real `pk_test_` key) ⇒ a hosted-page payment completes
     through the return page, and the backend log has
@@ -293,7 +295,7 @@
     redirect. Its text comes from a fixed table of codes; an unknown broker `error` value shows as
     "unknown error" and is never echoed. Codes: `connected` ("MONEI connected (Live, Test). You can close
     this tab."), `unknownState`, `expired`, `access_denied`, `otherAccount`, `envKeyUnchecked`,
-    `keyRejected`,
+    `envKeyNoProvider`, `keyRejected`,
     `temporarily_unavailable`, and the token `errors` codes (`cap`: revoke unused keys in the
     dashboard; `not_approved`: Live comes after approval; `blocked`, `ineligible`).
   - Then `Connect.exchange` and the switch.
@@ -301,15 +303,17 @@
   - Live: when Live has a key, the new `accountId` must equal the current Live account, else the whole
     connect is refused, Test too (`otherAccount`: "This backend uses another MONEI account. Disconnect
     first, or remove the env key.").
-    - A connected Live row exists: its `account_id`, checked inside `switchCredentials`. The env key
-      is not checked then (the connected row is the one in effect).
+    - A connected Live row exists (read through the module service, past every cache): its
+      `account_id`, checked again inside `switchCredentials`. The env key is not checked then (the
+      connected row is the one in effect).
     - No connected Live row, env Live key: `paymentMethods.getAllowed()` with the env key on a fresh
-      client, before the transaction. A 2xx with `accountId` ⇒ compare. A 401 ⇒ nothing to compare
-      (the key is revoked), a warning, the switch goes on. A 403 ⇒ refused with `envKeyUnchecked`
+      client, before the transaction, only when Live is returned. A 2xx with `accountId` ⇒ compare. A
+      401 twice (one retry: the authorizer also answers 401 on a transient account read) ⇒ nothing to
+      compare (the key is revoked), a warning, the switch goes on. A 403 ⇒ refused with `envKeyUnchecked`
       ("The env key cannot read its account: give it `allowedPaymentMethods:read` or remove it"): a
       scoped `mk_` env key outside that scope still works for payments, and a WAF block also answers
-      403. A 400 ⇒ refused with `envKeyUnchecked` too (the account has no enabled provider, the key
-      still works; a retry does not help). A 2xx without `accountId`, a 5xx, a 429 or no answer ⇒
+      403. A 400 ⇒ refused with `envKeyNoProvider` ("The env key's account has no enabled payment
+      method, so its account cannot be checked: remove the env key or enable a method"). A 2xx without `accountId`, a 5xx, a 429 or no answer ⇒
       `temporarily_unavailable`.
   - A returned Test `accountId` alone is not checked (PHP rule: the shared test-account repair).
   - One test call with the new key on a fresh client (never the cached one):
@@ -331,7 +335,9 @@
      and try once more (a worker whose cache predates a connect or reconnect). The provider and the
      reconcile subscriber verify the same callback at the same time; the single-flight read that
      writes the cache gives both the new secrets, and the 5 s limit keeps forged `v2` headers from
-     loading the database.
+     loading the database. When the 5 s limit blocks the fresh read and nothing verifies, the provider
+     throws (the Redis event bus retries in 5 s, with a fresh read) instead of refusing; the reconcile
+     subscriber does the same.
   3. `v1` with the env key, when one is set: `verifySignature(body, signature)` on a `Monei` built with
      the env key, never on the connected client (its key is `mk_`).
   4. Else refused (`NOT_SUPPORTED`, no fetch). For a payment body on a backend whose key in effect is
@@ -448,8 +454,9 @@ task's list, so a Sylius-first run cannot ship a subset.
 
 ### Task 3: Credentials module and key resolution (`medusa-payment-monei`)
 
-Tasks 3 and 4 need only SDK 3.6.0 (`verifySignature` with a secret); they can run while Task 2 waits
-for its release.
+Tasks 3 and 4 need only SDK 3.6.0 (`verifySignature` with a secret), not Task 1 or Task 2. When a gate
+of Task 1 or 2 holds, the user may tell exec to run Tasks 3 and 4 first; the plan order stays the
+default.
 
 **Files:**
 
@@ -486,7 +493,8 @@ for its release.
       the user picks (Stage 5); nothing ⇒ the "not connected" error on a call while the provider
       constructs
 - [ ] write tests for the reader: a cleared cache sees a new row; an uncleared one does not at 29 s and
-      does at 30 s + 1 ms (fake timers); `fresh` sees a new row and leaves the cache as it was; an error
+      does at 30 s + 1 ms (fake timers); `fresh` sees a new row and the next non-fresh call returns it;
+      two parallel `fresh` calls run one query; `clearCredentialsCache()` resets the 5 s window; an error
       with `code: "42P01"` (the pg error shape) ⇒ the env key, one warning for two calls; another error
       ⇒ thrown, and the next call queries again; a connected key with the `accountId` option set ⇒ the
       env key; no `MONEI-Account-ID` header on a connected key; the Apple Pay job with an https
@@ -520,7 +528,8 @@ for its release.
       second fresh read; `v2` with an unknown secret and no env key ⇒
       `NOT_SUPPORTED`, no fetch, an error line naming the id; the same with a body id holding a newline ⇒
       the id is not logged; a header with `v1` (env key) and an unknown `v2` ⇒ fetched; `v1` without an
-      env key ⇒ refused; an unverified event envelope ⇒ a warning, not an error; a backend with no key at
+      env key ⇒ refused; an unknown `v2` inside the 5 s window ⇒ a throw (retry), not a refusal; an
+      unverified event envelope ⇒ a warning, not an error; a backend with no key at
       all ⇒ `NOT_SUPPORTED`, not a throw
 - [ ] write `livemode` tests, each for a payment body and for an event envelope: `false` on Live ⇒
       refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒ refused
@@ -559,7 +568,10 @@ that version, also in `e2e/backend/package.json` and its lock).
       `switchCredentials`; only Test returned ⇒ the Live row unchanged
 - [ ] write account tests: env Live key whose `getAllowed` answers another `accountId` ⇒ `otherAccount`,
       nothing switched, Test included; env Live key answering 401 ⇒ switched with a warning; env Live key
-      answering 403 or 400 ⇒ `envKeyUnchecked`, nothing switched; 5xx, or 2xx without `accountId` ⇒
+      answering 403 ⇒ `envKeyUnchecked`, 400 ⇒ `envKeyNoProvider`, nothing switched; env Live key
+      answering 401 then 2xx of another account ⇒ `otherAccount`; Test-only result with an env Live key
+      ⇒ no env call, switched; the store answering `otherAccount` ⇒ that page code and no `afterSend`
+      step; 5xx, or 2xx without `accountId` ⇒
       `temporarily_unavailable`, nothing switched; a connected Live row exists ⇒ no env `getAllowed`
       call; only Test returned with a new Test account ⇒ switched. (The stored-Live check inside
       `switchCredentials` is an e2e row, not a unit row: a store fake would only echo it.)
