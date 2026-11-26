@@ -133,12 +133,39 @@ describe("getWebhookActionAndData: scoped signatures", () => {
   it("still fetches payments signed with the old secret during rotation", async () => {
     const oldSecret = "mksec_test_old";
     useProvider({ apiKey: SCOPED_API_KEY, signingSecret: [SIGNING_SECRET, oldSecret] });
+    const verifySignature = vi.spyOn(provider["client_"], "verifySignature");
 
     await expect(webhook(body, { "monei-signature": signV2(body, oldSecret) })).resolves.toEqual({
       action: "captured",
       data: { session_id: SESSION_ID, amount: 19.99 },
     });
     expect(mock.history.get.map((request) => request.url)).toEqual([PAYMENT]);
+    expect(verifySignature.mock.calls.map(([, , secret]) => secret)).toEqual([
+      SIGNING_SECRET,
+      oldSecret,
+    ]);
+  });
+
+  it("keeps a paid callback pending when the fetched payment is pending", async () => {
+    useProvider({ apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET });
+    mock.onGet(PAYMENT).reply(200, fetched({ status: "PENDING" }));
+    const raw = JSON.stringify({ id: "pay_1", status: "SUCCEEDED", orderId: "payses_other" });
+    const signature = `${signV2(raw, SIGNING_SECRET)},v1=${hmac(raw)}`;
+
+    await expect(webhook(raw, { "monei-signature": signature })).resolves.toEqual({
+      action: "pending",
+      data: { session_id: SESSION_ID, amount: 19.99 },
+    });
+  });
+
+  it("refuses a matching v1 when v2 fails on a scoped backend", async () => {
+    useProvider({ apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET });
+    // Sign v1 with the SDK's key so an accidental fallback would verify it.
+    const signature = `${sign(body, SCOPED_API_KEY)},v2=${hmac(body, "mksec_test_other")}`;
+
+    await expect(webhook(body, { "monei-signature": signature })).resolves.toEqual(NOT_SUPPORTED);
+    expect(mock.history.get).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -224,6 +251,23 @@ describe("getWebhookActionAndData: account-webhook event", () => {
       data: { session_id: SESSION_ID, amount: 19.99 },
     });
     expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
+  it.each([
+    ["still accepts dashboard webhooks with an account key", {}, "captured", [PAYMENT]],
+    [
+      "refuses the dashboard webhook's own signing secret with a scoped key",
+      { apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET },
+      "not_supported",
+      [],
+    ],
+  ] as const)("%s", async (_, options, action, urls) => {
+    useProvider(options);
+    const raw = envelope();
+    const signature = `${sign(raw)},v2=${hmac(raw, "whsec_test_x")}`;
+
+    await expect(webhook(raw, { "monei-signature": signature })).resolves.toMatchObject({ action });
+    expect(fetchedUrls()).toEqual(urls);
   });
 
   it.each([

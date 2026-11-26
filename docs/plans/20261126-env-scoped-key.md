@@ -110,8 +110,8 @@ Trello: https://trello.com/c/xaRD0Pxs
 
 ### Task 2: Verify acceptance criteria
 
-- [ ] every Solution Overview rule has a test; the `pk_` regression rows pass unchanged
-- [ ] run `pnpm test` and `pnpm exec vp check`
+- [x] every Solution Overview rule has a test; the `pk_` regression rows pass unchanged
+- [x] run `pnpm test` and `pnpm exec vp check`
 
 ### Task 3: Update documentation
 
