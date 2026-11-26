@@ -597,22 +597,22 @@ default.
   `tests/helpers.ts` (a `signV2` helper computed independently of the SDK; `livemode` in the callback
   fixtures)
 
-- [ ] `verifyWebhook(credentials, payload)` per the Solution Overview: `v2`, `v1` with an env-key
+- [x] `verifyWebhook(credentials, payload)` per the Solution Overview: `v2`, `v1` with an env-key
       `Monei`, the `livemode` check, then the fetch fallback with its pre-checks, quota and post-fetch
       checks
-- [ ] the provider and the reconcile subscriber call it with the resolved credentials
-- [ ] write verify tests: `v2` with the current secret ⇒ fetched, no quota used; a header with `v1`
+- [x] the provider and the reconcile subscriber call it with the resolved credentials
+- [x] write verify tests: `v2` with the current secret ⇒ fetched, no quota used; a header with `v1`
       (env key) and an unknown `v2` ⇒ fetched as verified; with the partner `accountId` option, a `v1`
       body with `livemode: true` on a `pk_test_` key ⇒ fetched; an unverified event envelope ⇒ a
       warning, no fetch
-- [ ] write `livemode` tests for verified bodies, each for a payment body and for an event envelope:
+- [x] write `livemode` tests for verified bodies, each for a payment body and for an event envelope:
       `false` on Live ⇒ refused; `true` on Test ⇒ refused; absent ⇒ refused; `"false"` (a string) ⇒
       refused
-- [ ] rewrite the existing refusal rows that the fallback changes (`tests/webhook.test.ts` "refuses %s
+- [x] rewrite the existing refusal rows that the fallback changes (`tests/webhook.test.ts` "refuses %s
       without fetching the payment", `tests/subscribers.test.ts` "does nothing for a callback with a bad
       signature"): use a MONEI-format payment id; an unknown or captured session ⇒ refused, no fetch; an
       open session ⇒ the fallback fetch
-- [ ] write fallback tests (each names its bug): an unverified body of an open session ⇒ fetched and
+- [x] write fallback tests (each names its bug): an unverified body of an open session ⇒ fetched and
       the action returned (the revoked-key and missing-`v2` callbacks settle); a malformed payment id, or
       an `orderId` that is not `payses_…` ⇒ refused, no fetch; an unknown session ⇒ refused, no fetch; a 6th fallback for one
       session within a minute, or a 61st in all ⇒ refused, no fetch, an error line, and one more after
@@ -624,11 +624,11 @@ default.
       payment is captured or canceled ⇒ refused, no fetch; a fetched payment whose `id` or `orderId` differs from the body's ⇒
       refused; a fetched `livemode` other than the mode ⇒ refused; a body id holding a newline ⇒ the id
       is not logged; a backend with no key at all ⇒ `NOT_SUPPORTED`, not a throw
-- [ ] the reconcile subscriber refuses what the provider refuses (one wiring row)
-- [ ] card holders by mode per the Solution Overview; write tests: a holder of the other mode ⇒ no
+- [x] the reconcile subscriber refuses what the provider refuses (one wiring row)
+- [x] card holders by mode per the Solution Overview; write tests: a holder of the other mode ⇒ no
       customer on the payment and no saved cards listed; a 404 for a holder of the other mode ⇒ the
       holder stays; a holder without a mode on an env-key backend ⇒ used as today
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 5: Connect service (start, exchange, switch)
 

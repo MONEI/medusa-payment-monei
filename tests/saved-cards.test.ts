@@ -43,7 +43,10 @@ const moneiPayment = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const holder = (id: string) => ({ provider_id: "pp_monei_monei", data: { id } });
+const holder = (id: string, mode?: "test" | "live") => ({
+  provider_id: "pp_monei_monei",
+  data: { id, mode },
+});
 
 const tables: Record<string, Record<string, unknown>[]> = {
   customer: [
@@ -54,6 +57,7 @@ const tables: Record<string, Record<string, unknown>[]> = {
     { id: "cus_B", account_holders: [holder("mcus_B")] },
     { id: "cus_C", account_holders: [] },
     { id: "cus_D", account_holders: [holder("mcus_D1"), holder("mcus_D2")] },
+    { id: "cus_live", account_holders: [holder("mcus_live", "live")] },
   ],
   cart: [
     { id: "cart_A", customer_id: "cus_A" },
@@ -493,6 +497,15 @@ describe("GET /store/monei/payment-methods", () => {
   it("returns an empty list without calling MONEI when the customer has no account holder", async () => {
     // Bug: MONEI is called with an undefined customer id.
     expect((await list("cus_C")).body).toEqual({ payment_methods: [] });
+    expect(mock.history.get).toHaveLength(0);
+  });
+
+  it("does not expose saved cards from a holder of the other mode in the store route", async () => {
+    mock
+      .onGet(`${API}/customers/mcus_live/payment-methods`)
+      .reply(200, [savedCard(TOKEN_A, "4242")]);
+
+    expect((await list("cus_live")).body).toEqual({ payment_methods: [] });
     expect(mock.history.get).toHaveLength(0);
   });
 

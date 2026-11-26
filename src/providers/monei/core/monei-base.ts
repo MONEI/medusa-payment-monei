@@ -53,11 +53,11 @@ import {
   toWebhookAction,
 } from "../utils/status";
 import { validateOptions } from "./client";
-import { loadCredentials } from "./credentials";
+import { type Credentials, loadCredentials } from "./credentials";
 import { callMonei, isClientError, toMedusaError } from "./errors";
 import { PROVIDER_ID, sessionIdOf } from "./ids";
 import { clientForCredentials } from "./scope";
-import { verifyWebhook } from "./webhook";
+import { ignoreWebhook, verifyWebhook, type WebhookSession } from "./webhook";
 
 /** The keys every payment provider method returns in `data`; the store cart API exposes them. */
 type MoneiSessionData = {
@@ -184,14 +184,14 @@ function customerFields(
 type SessionLookup = {
   list(
     filters: { id: string },
-    config: { select: string[] },
+    config: { select?: string[]; relations?: string[] },
   ): Promise<
-    {
+    (WebhookSession & {
       id: string;
       amount?: BigNumberInput;
       currency_code?: string;
       authorized_at?: Date | string | null;
-    }[]
+    })[]
   >;
 };
 
@@ -214,13 +214,16 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     this.logger_ = cradle.logger as Logger;
   }
 
-  protected async client(): Promise<Monei> {
-    const credentials = await loadCredentials(
+  protected credentials(): Promise<Credentials> {
+    return loadCredentials(
       this.container[ContainerRegistrationKeys.PG_CONNECTION] as Knex,
       this.options_,
       this.logger_,
     );
-    return clientForCredentials(this, credentials);
+  }
+
+  protected async client(credentials?: Credentials): Promise<Monei> {
+    return clientForCredentials(this, credentials ?? (await this.credentials()));
   }
 
   protected call<T>(action: string, fn: () => Promise<T>): Promise<T> {
@@ -230,6 +233,7 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   /** The MONEI customer of the session; only the card provider has account holders. */
   protected async resolveCustomer(
     _client: Monei,
+    _credentials: Credentials,
     _context?: PaymentProviderContext,
   ): Promise<ResolvedCustomer> {
     return { missing: false };
@@ -291,8 +295,9 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
     }
 
     const country = billingCountry(data?.billing_country);
-    const client = await this.client();
-    const customer = await this.resolveCustomer(client, context);
+    const credentials = await this.credentials();
+    const client = await this.client(credentials);
+    const customer = await this.resolveCustomer(client, credentials, context);
     const saveCard = data?.save_card === true;
     if (saveCard && !customer.customerId) {
       this.logger_.warn(
@@ -582,38 +587,37 @@ export abstract class MoneiBase extends AbstractPaymentProvider<MoneiOptions> {
   }
 
   /**
-   * The signed body is only a pointer: the session id, status and amount come from
+   * The callback body is only a pointer: the session id, status and amount come from
    * the payment fetched from MONEI.
    */
   async getWebhookActionAndData(
     payload: ProviderWebhookPayload["payload"],
   ): Promise<WebhookActionResult> {
-    const notSupported = (reason: string): WebhookActionResult => {
-      this.logger_.warn(`MONEI webhook ignored: ${reason}`);
-      return { action: PaymentActions.NOT_SUPPORTED };
-    };
+    const unsupported = { action: PaymentActions.NOT_SUPPORTED } as const;
+    const credentials = await this.credentials();
+    const lookup = this.container.paymentSessionService as SessionLookup;
+    const callback = await verifyWebhook(credentials, payload, {
+      client: () => clientForCredentials(this, credentials),
+      logger: this.logger_,
+      findSession: async (id) => (await lookup.list({ id }, { relations: ["payment"] }))[0],
+    });
+    if (!callback) return unsupported;
 
-    const client = await this.client();
-    const verified = verifyWebhook(client, payload);
-    if ("refused" in verified) return notSupported(verified.refused);
-    const id = verified.paymentId;
-
-    // A throw lets the event bus retry; a dropped paid callback would leave the cart open.
-    const payment = await this.call("get payment", () => client.payments.get(id));
+    const { payment, verified } = callback;
     const sessionId = sessionIdOf(payment.orderId);
     if (!sessionId) {
-      return notSupported(
-        `payment ${payment.id} has no Medusa session (orderId ${payment.orderId})`,
+      ignoreWebhook(
+        this.logger_,
+        `payment has no Medusa session (orderId ${payment.orderId})`,
+        payment.id,
       );
+      return unsupported;
     }
     // The callback of a deleted session must not complete any cart. The reconcile
     // subscriber reports the orphan payment.
-    const sessions = await (this.container.paymentSessionService as SessionLookup).list(
-      { id: sessionId },
-      { select: ["id"] },
-    );
-    if (!sessions.length) {
-      return notSupported(`payment ${payment.id}: session ${sessionId} no longer exists`);
+    if (verified && !(await lookup.list({ id: sessionId }, { select: ["id"] })).length) {
+      ignoreWebhook(this.logger_, `session ${sessionId} no longer exists`, payment.id);
+      return unsupported;
     }
     return {
       action: toWebhookAction(payment.status),

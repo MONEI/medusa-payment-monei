@@ -29,16 +29,16 @@ beforeEach(async () => {
   mock = new MockAdapter((await provider["client"]()).client);
 });
 
-const initiateWithHolder = (data: Record<string, unknown> = {}) =>
+const initiateWithHolder = (data: Record<string, unknown> = {}, mode?: "test" | "live") =>
   provider.initiatePayment({
     amount: 19.99,
     currency_code: "eur",
     data: { session_id: SESSION_ID, save_card: true, ...data },
-    context: { account_holder: { data: { id: "cus_1" } } },
+    context: { account_holder: { data: { id: "cus_1", mode } } },
   });
 
 describe("createAccountHolder", () => {
-  it("creates the MONEI customer from the Medusa customer and stores its id in data", async () => {
+  it("stores the new customer id and mode so switching modes cannot reuse it", async () => {
     // Bugs: a holder without `data.id` makes every card payment customer-less
     // (Medusa gives initiatePayment only `data`); missing contact fields.
     mock.onPost(`${API}/customers`).reply(200, { id: "cus_1", email: "ana@example.com" });
@@ -56,7 +56,7 @@ describe("createAccountHolder", () => {
       },
     });
 
-    expect(holder).toEqual({ id: "cus_1", data: { id: "cus_1" } });
+    expect(holder).toEqual({ id: "cus_1", data: { id: "cus_1", mode: "test" } });
     expect(JSON.parse(mock.history.post[0].data)).toEqual({
       email: "ana@example.com",
       name: "Ana Silva",
@@ -99,6 +99,19 @@ describe("deleteAccountHolder", () => {
 });
 
 describe("initiatePayment on a card session", () => {
+  it("does not try to link or save cards for a holder of the other mode", async () => {
+    mock.onGet(`${API}/customers/cus_1`).reply(200, { id: "cus_1" });
+    mock.onPost(`${API}/payments`).reply(200, createdPayment);
+
+    const result = await initiateWithHolder({}, "live");
+
+    expect(mock.history.get).toHaveLength(0);
+    const request = JSON.parse(mock.history.post[0].data);
+    expect(request).not.toHaveProperty("customerId");
+    expect(request).not.toHaveProperty("generatePaymentToken");
+    expect(result.data?.monei_customer_missing).toBe(false);
+  });
+
   it("drops the customer and sets the flag when MONEI no longer has it", async () => {
     // Bug: sending a deleted customerId makes MONEI refuse every payment of a
     // shopper whose customer was deleted at MONEI only; the flag drives the
@@ -116,7 +129,7 @@ describe("initiatePayment on a card session", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("the card is not saved"));
   });
 
-  it("links a live customer and ignores a storefront flag", async () => {
+  it("keeps using a legacy holder on its env key and ignores a storefront flag", async () => {
     // Bugs: a storefront `monei_customer_missing: true` that survives would make
     // the subscriber delete a live account holder; save card not requested.
     mock.onGet(`${API}/customers/cus_1`).reply(200, { id: "cus_1" });
@@ -198,6 +211,15 @@ describe("payment methods", () => {
       { id: OPAQUE_ID, data: { brand: "visa", last4: "4242", expires_at: 1924991999 } },
     ]);
     expect(JSON.stringify(methods)).not.toContain(TOKEN);
+  });
+
+  it("does not list saved cards from a holder of the other mode", async () => {
+    await expect(
+      provider.listPaymentMethods({
+        context: { account_holder: { data: { id: "cus_1", mode: "live" } } },
+      }),
+    ).resolves.toEqual([]);
+    expect(mock.history.get).toHaveLength(0);
   });
 
   it("deletes the token that the opaque id maps to", async () => {

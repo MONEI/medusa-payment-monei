@@ -1,52 +1,69 @@
-import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { clearCredentialsCache } from "../src/providers/monei/core/credentials";
+import { moneiClient } from "../src/providers/monei/core/scope";
 import reconcile, { config } from "../src/subscribers/monei-payment-reconcile";
-import { API_KEY, fakeGraph, sign } from "./helpers";
+import { API_KEY, fakeGraph, MONEI_PAYMENT_ID, sign, TestProvider } from "./helpers";
 
-// The subscriber builds its own client; hand it one whose axios instance is mocked.
-const shared = vi.hoisted(() => ({ client: undefined as unknown }));
-vi.mock("../src/providers/monei/core/client", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  createMoneiClient: () => shared.client,
-}));
+const mocks = vi.hoisted(() => new Map<string, MockAdapter[]>());
+vi.mock("../src/providers/monei/core/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/monei/core/client")>();
+  return {
+    ...actual,
+    createMoneiClient: (options: Parameters<typeof actual.createMoneiClient>[0]) => {
+      const client = actual.createMoneiClient(options);
+      const adapters = mocks.get(options.apiKey) ?? [];
+      adapters.push(new MockAdapter(client.client));
+      mocks.set(options.apiKey, adapters);
+      return client;
+    },
+  };
+});
 
 const API = "https://api.monei.com/v1";
 
-const callback = JSON.stringify({ id: "pay_1", status: "SUCCEEDED" });
+const callbackBody = (overrides: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    id: MONEI_PAYMENT_ID,
+    status: "SUCCEEDED",
+    orderId: "payses_gone",
+    livemode: false,
+    ...overrides,
+  });
+const callback = callbackBody();
 
 const moneiPayment = (overrides: Record<string, unknown> = {}) => ({
-  id: "pay_1",
+  id: MONEI_PAYMENT_ID,
   orderId: "payses_gone",
   amount: 1999,
   currency: "EUR",
   status: "SUCCEEDED",
+  livemode: false,
   ...overrides,
 });
 
-const cardHolder = (id: string, externalId: string) => ({
+const cardHolder = (id: string, externalId: string, mode?: string) => ({
   id,
   provider_id: "pp_monei_monei",
   external_id: externalId,
-  data: { id: externalId },
+  data: { id: externalId, mode },
 });
 
 const flaggedSession = (id: string, moneiCustomerId: string) => ({
   id,
-  data: { id: "pay_1", monei_customer_missing: true },
+  data: { id: MONEI_PAYMENT_ID, monei_customer_missing: true },
   context: {
     customer: { id: "cus_A" },
     account_holder: { data: { id: moneiCustomerId } },
   },
 });
 
-const tables: Record<string, Record<string, unknown>[]> = {
+const fixtures: Record<string, Record<string, unknown>[]> = {
   payment_session: [
     { id: "payses_other", data: { id: "pay_2" }, context: null },
     {
       id: "payses_live",
-      data: { id: "pay_1", monei_customer_missing: false },
+      data: { id: MONEI_PAYMENT_ID, monei_customer_missing: false },
       context: {
         customer: { id: "cus_A" },
         account_holder: { data: { id: "mcus_old" } },
@@ -69,17 +86,19 @@ const tables: Record<string, Record<string, unknown>[]> = {
 };
 
 let mock: MockAdapter;
+let tables: typeof fixtures;
 let emit: ReturnType<typeof vi.fn>;
 let deleteAccountHolder: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let container: { resolve: (key: string) => unknown };
+let clock = Date.now();
 
-beforeEach(clearCredentialsCache);
-
-beforeEach(() => {
-  const client = new Monei(API_KEY);
-  shared.client = client;
-  mock = new MockAdapter(client.client);
+beforeEach(async () => {
+  clearCredentialsCache();
+  mocks.clear();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime((clock += 120_000));
+  tables = structuredClone(fixtures);
   emit = vi.fn();
   deleteAccountHolder = vi.fn();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
@@ -101,7 +120,10 @@ beforeEach(() => {
     },
   };
   container = { resolve: (key) => deps[key] };
+  await moneiClient(container as never);
+  mock = mocks.get(API_KEY)![0];
 });
+afterEach(() => vi.useRealTimers());
 
 const run = (
   overrides: { provider?: string; rawData?: unknown; headers?: Record<string, unknown> } = {},
@@ -113,7 +135,7 @@ const run = (
         provider: overrides.provider ?? "monei_monei",
         payload: {
           // Never trusted: names another session.
-          data: { id: "pay_1", orderId: "payses_live" },
+          data: { id: MONEI_PAYMENT_ID, orderId: "payses_live" },
           rawData: (overrides.rawData ?? callback) as string,
           headers: overrides.headers ?? { "monei-signature": sign(callback) },
         },
@@ -128,14 +150,14 @@ const posts = () => mock.history.post.length;
 describe("reconcile subscriber: orphan payments", () => {
   it("reports a paid payment whose session is gone, and never refunds it", async () => {
     // Bug: a Bizum approved after a cart change is charged with no order and nobody hears of it.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment());
+    mock.onGet(`${API}/payments/${MONEI_PAYMENT_ID}`).reply(200, moneiPayment());
 
     await run();
 
     expect(emit).toHaveBeenCalledWith({
       name: "monei.orphan_payment",
       data: {
-        payment_id: "pay_1",
+        payment_id: MONEI_PAYMENT_ID,
         session_id: "payses_gone",
         amount: 19.99,
         currency: "EUR",
@@ -143,7 +165,7 @@ describe("reconcile subscriber: orphan payments", () => {
       },
     });
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error.mock.calls[0][0]).toContain("pay_1");
+    expect(logger.error.mock.calls[0][0]).toContain(MONEI_PAYMENT_ID);
     expect(logger.error.mock.calls[0][0]).toContain("refund it");
     expect(posts()).toBe(0);
   });
@@ -151,14 +173,14 @@ describe("reconcile subscriber: orphan payments", () => {
   it("reports an authorized payment whose session now points to another payment", async () => {
     // Bug: only a missing session is checked, so a replaced payment is never reported.
     mock
-      .onGet(`${API}/payments/pay_1`)
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
       .reply(200, moneiPayment({ orderId: "payses_other", status: "AUTHORIZED" }));
 
     await run();
 
     expect(emit).toHaveBeenCalledWith({
       name: "monei.orphan_payment",
-      data: expect.objectContaining({ payment_id: "pay_1", session_id: "payses_other" }),
+      data: expect.objectContaining({ payment_id: MONEI_PAYMENT_ID, session_id: "payses_other" }),
     });
     // Bug: told to refund an AUTHORIZED hold, which MONEI refuses.
     expect(logger.error.mock.calls[0][0]).toContain("cancel it");
@@ -166,7 +188,9 @@ describe("reconcile subscriber: orphan payments", () => {
 
   it("stays silent for a canceled payment whose session is gone", async () => {
     // Bug: every cart change cancels the old payment, so each CANCELED callback raises an alert.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ status: "CANCELED" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ status: "CANCELED" }));
 
     await run();
 
@@ -176,7 +200,9 @@ describe("reconcile subscriber: orphan payments", () => {
 
   it("stays silent for a paid payment of the session's own payment", async () => {
     // Bug: every normal checkout is reported as an orphan, or a live holder is deleted.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "payses_live" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_live" }));
 
     await run();
 
@@ -186,7 +212,9 @@ describe("reconcile subscriber: orphan payments", () => {
 
   it("ignores payments of another integration on the same MONEI account", async () => {
     // Bug: a WooCommerce order paid on the shared account is reported as a Medusa orphan.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "WC-1042" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "WC-1042" }));
 
     await run();
 
@@ -196,7 +224,7 @@ describe("reconcile subscriber: orphan payments", () => {
   it("throws when the payment cannot be fetched, so the event bus retries", async () => {
     // Bug: an API outage swallows the only callback of an orphan payment.
     mock
-      .onGet(`${API}/payments/pay_1`)
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
       .reply(503, { statusCode: 503, message: "Service unavailable" });
 
     await expect(run()).rejects.toThrow("Service unavailable");
@@ -207,16 +235,90 @@ describe("reconcile subscriber: orphan payments", () => {
 describe("reconcile subscriber: verification", () => {
   beforeEach(() => {
     // Would be reported as an orphan if the callback were accepted.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment());
+    mock.onGet(`${API}/payments/${MONEI_PAYMENT_ID}`).reply(200, moneiPayment());
   });
 
-  it("does nothing for a callback with a bad signature", async () => {
+  it("does nothing for a callback with a bad signature when the session is gone", async () => {
     // Bug: a forged callback makes the subscriber alert or delete account holders.
     await run({ headers: { "monei-signature": sign(callback, "pk_test_other") } });
 
     expect(mock.history.get).toHaveLength(0);
     expect(emit).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches with the active key after a bad signature when the session is open", async () => {
+    const raw = callbackBody({ orderId: "payses_other" });
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_other" }));
+
+    await run({ rawData: raw, headers: { "monei-signature": sign(raw, "pk_test_other") } });
+
+    expect(mock.history.get).toHaveLength(1);
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ name: "monei.orphan_payment" }));
+  });
+
+  it("refuses an unsigned replay after the session's Medusa payment is captured", async () => {
+    tables.payment_session.push({ id: "payses_captured", payment: { captured_at: new Date() } });
+    const raw = callbackBody({ orderId: "payses_captured" });
+
+    await run({ rawData: raw, headers: {} });
+
+    expect(mock.history.get).toHaveLength(0);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("shares the provider's refusal of a signed callback of the other mode", async () => {
+    const raw = callbackBody({ livemode: true });
+    const headers = { "monei-signature": sign(raw) };
+    const provider = new TestProvider(
+      { logger },
+      { apiKey: API_KEY, backendUrl: "https://shop.test" },
+    );
+
+    await expect(
+      provider.getWebhookActionAndData({ rawData: raw, headers, data: {} }),
+    ).resolves.toEqual({ action: "not_supported" });
+    await run({ rawData: raw, headers });
+
+    expect(mocks.get(API_KEY)!.flatMap((adapter) => adapter.history.get)).toHaveLength(0);
+    expect(emit).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares the last fallback slot across the providers' separate clients for one delivery", async () => {
+    const orderId = "payses_other";
+    const payment = moneiPayment({ orderId });
+    const paymentUrl = `${API}/payments/${MONEI_PAYMENT_ID}`;
+    const provider = new TestProvider(
+      { logger, paymentSessionService: { list: async () => [{ id: orderId }] } },
+      { apiKey: API_KEY, backendUrl: "https://shop.test" },
+    );
+    await provider["client"]();
+    const providerMock = mocks.get(API_KEY)![1];
+    providerMock.onGet(paymentUrl).reply(200, payment);
+    mock.onGet(paymentUrl).reply(200, payment);
+    for (let index = 0; index < 4; index++) {
+      const rawData = callbackBody({ orderId, updatedAt: index });
+      await expect(
+        provider.getWebhookActionAndData({ rawData, headers: {}, data: {} }),
+      ).resolves.toMatchObject({ action: "captured" });
+    }
+
+    const raw = callbackBody({ orderId });
+    const headers = { "monei-signature": sign(raw, "pk_test_old") };
+    const [action] = await Promise.all([
+      provider.getWebhookActionAndData({ rawData: Buffer.from(raw), headers, data: {} }),
+      run({ rawData: JSON.parse(JSON.stringify(Buffer.from(raw))), headers }),
+    ]);
+
+    expect(action).toMatchObject({ action: "captured" });
+    expect(emit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "monei.orphan_payment" }),
+    );
+    expect(providerMock.history.get.length + mock.history.get.length).toBe(5);
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("orphan payment"));
   });
 
   it("verifies a raw body that the Redis event bus serialized as a Buffer object", async () => {
@@ -233,16 +335,19 @@ describe("reconcile subscriber: verification", () => {
     const event = JSON.stringify({
       id: "evt_1",
       type: "charge.succeeded",
+      livemode: false,
       objectType: "charge",
-      objectId: "pay_1",
-      object: { id: "pay_1", status: "SUCCEEDED" },
+      objectId: MONEI_PAYMENT_ID,
+      object: { id: MONEI_PAYMENT_ID, status: "SUCCEEDED" },
     });
 
     await run({ rawData: event, headers: { "monei-signature": sign(event) } });
 
-    expect(mock.history.get.map((request) => request.url)).toEqual([`${API}/payments/pay_1`]);
+    expect(mock.history.get.map((request) => request.url)).toEqual([
+      `${API}/payments/${MONEI_PAYMENT_ID}`,
+    ]);
     expect(emit).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ payment_id: "pay_1" }) }),
+      expect.objectContaining({ data: expect.objectContaining({ payment_id: MONEI_PAYMENT_ID }) }),
     );
   });
 
@@ -259,7 +364,9 @@ describe("reconcile subscriber: stale MONEI customers", () => {
   it("deletes the card holder whose MONEI customer is gone", async () => {
     // Bug: the holder keeps pointing to a deleted customer and no saved card works again.
     // The customer also has a newer card holder listed first: only the matching one goes.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "payses_stale" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_stale" }));
     mock
       .onGet(`${API}/customers/mcus_old`)
       .reply(404, { status: "NOT_FOUND", statusCode: 404, message: "Customer not found" });
@@ -270,9 +377,28 @@ describe("reconcile subscriber: stale MONEI customers", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it("keeps a Live holder even when the Test client would get a 404 for it", async () => {
+    tables.customer[0].account_holders = [cardHolder("acchld_old", "mcus_old", "live")];
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_stale" }));
+    mock
+      .onGet(`${API}/customers/mcus_old`)
+      .reply(404, { statusCode: 404, message: "Customer not found" });
+
+    await run();
+
+    expect(deleteAccountHolder).not.toHaveBeenCalled();
+    expect(mock.history.get.map((request) => request.url)).toEqual([
+      `${API}/payments/${MONEI_PAYMENT_ID}`,
+    ]);
+  });
+
   it("keeps the holder when the MONEI customer still exists", async () => {
     // Bug: a holder is deleted on the flag alone, and the shopper loses the saved cards.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "payses_stale" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_stale" }));
     mock.onGet(`${API}/customers/mcus_old`).reply(200, { id: "mcus_old" });
 
     await run();
@@ -282,7 +408,9 @@ describe("reconcile subscriber: stale MONEI customers", () => {
 
   it("keeps the current holder when the stale one was already replaced", async () => {
     // Bug: a late callback deletes the new holder made by the next checkout.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "payses_replaced" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_replaced" }));
 
     await run();
 
@@ -294,7 +422,9 @@ describe("reconcile subscriber: stale MONEI customers", () => {
 
   it("throws and keeps the holder when MONEI cannot answer", async () => {
     // Bug: a MONEI outage is read as a deleted customer and the holder is dropped.
-    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment({ orderId: "payses_stale" }));
+    mock
+      .onGet(`${API}/payments/${MONEI_PAYMENT_ID}`)
+      .reply(200, moneiPayment({ orderId: "payses_stale" }));
     mock
       .onGet(`${API}/customers/mcus_old`)
       .reply(503, { statusCode: 503, message: "Service unavailable" });

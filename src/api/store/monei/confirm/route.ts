@@ -3,7 +3,7 @@ import type { Logger } from "@medusajs/framework/types";
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils";
 import { callMonei } from "../../../../providers/monei/core/errors";
 import { CARD_PROVIDER_ID } from "../../../../providers/monei/core/ids";
-import { moneiClient } from "../../../../providers/monei/core/scope";
+import { moneiClient, moneiCredentials } from "../../../../providers/monei/core/scope";
 import { toSessionStatus } from "../../../../providers/monei/utils/status";
 import {
   findMoneiCustomerIds,
@@ -35,12 +35,13 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
       "Saved cards can only pay a MONEI card session",
     );
   }
-  const moneiCustomerIds = await findMoneiCustomerIds(req.scope, customerId);
+  const credentials = await moneiCredentials(req.scope);
+  const moneiCustomerIds = await findMoneiCustomerIds(req.scope, customerId, credentials);
   if (!moneiCustomerIds.length) {
     throw new MedusaError(MedusaError.Types.NOT_FOUND, "Payment method not found");
   }
 
-  const client = await moneiClient(req.scope);
+  const client = await moneiClient(req.scope, credentials);
   const paymentId = sessionPaymentId(session);
   const payment = await callMonei("get payment", () => client.payments.get(paymentId));
   // MONEI checks a token against the customer only when the payment has one. The

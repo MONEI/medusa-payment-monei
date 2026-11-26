@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types";
 import { MedusaError } from "@medusajs/framework/utils";
 import type { CustomerPaymentMethod, Monei } from "@monei-js/node-sdk";
+import type { Credentials } from "../../../providers/monei/core/credentials";
 import { isNotFound, toMedusaError } from "../../../providers/monei/core/errors";
 import { opaqueId } from "../../../providers/monei/core/ids";
 import { findCardHolders, findOne, query } from "../../../providers/monei/core/scope";
@@ -32,8 +33,9 @@ export function requireCustomerId(req: { auth_context?: { actor_id?: string } })
 export async function findMoneiCustomerIds(
   scope: MedusaContainer,
   customerId: string,
+  credentials: Credentials,
 ): Promise<string[]> {
-  const holders = await findCardHolders(query(scope), customerId);
+  const holders = await findCardHolders(query(scope), customerId, credentials);
   return holders.map((holder) => holder.moneiCustomerId);
 }
 

@@ -16,12 +16,14 @@ export const moneiError = (statusCode: number) => ({
 });
 
 export const API_KEY = "pk_test_x";
+export const MONEI_PAYMENT_ID = "0123456789abcdef0123456789abcdef";
 export const T = "1762970000";
 
 // Computed independently of the SDK: `t=<ts>,v1=hex(HMAC-SHA256(apiKey, "<ts>.<body>"))`.
 export const hmac = (raw: string, key = API_KEY) =>
   createHmac("sha256", key).update(`${T}.${raw}`).digest("hex");
 export const sign = (raw: string, key = API_KEY) => `t=${T},v1=${hmac(raw, key)}`;
+export const signV2 = (raw: string, secret: string) => `t=${T},v2=${hmac(raw, secret)}`;
 
 type GraphConfig = { entity: string; fields: string[]; filters: Record<string, unknown> };
 

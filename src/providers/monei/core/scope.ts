@@ -34,14 +34,20 @@ export function clientForCredentials(owner: object, credentials: Credentials): M
   return client;
 }
 
-export async function moneiClient(scope: MedusaContainer): Promise<Monei> {
-  const config = scope.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
-  const credentials = await loadCredentials(
+export function moneiCredentials(scope: MedusaContainer): Promise<Credentials> {
+  return loadCredentials(
     scope.resolve<Knex>(ContainerRegistrationKeys.PG_CONNECTION),
     getMoneiOptions(scope),
     scope.resolve<Logger>(ContainerRegistrationKeys.LOGGER),
   );
-  return clientForCredentials(config, credentials);
+}
+
+export async function moneiClient(
+  scope: MedusaContainer,
+  credentials?: Credentials,
+): Promise<Monei> {
+  const config = scope.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
+  return clientForCredentials(config, credentials ?? (await moneiCredentials(scope)));
 }
 
 /**
@@ -65,6 +71,7 @@ export async function findOne(
 export async function findCardHolders(
   queryService: Query,
   customerId: string,
+  credentials: Credentials,
 ): Promise<{ id: string | undefined; moneiCustomerId: string }[]> {
   const customer = await findOne(queryService, "customer", ["id", "account_holders.*"], {
     id: customerId,
@@ -76,7 +83,7 @@ export async function findCardHolders(
   } | null)[];
   return holders.flatMap((holder) => {
     const moneiCustomerId =
-      holder?.provider_id === CARD_PROVIDER_ID ? moneiCustomerIdOf(holder) : undefined;
+      holder?.provider_id === CARD_PROVIDER_ID ? moneiCustomerIdOf(holder, credentials) : undefined;
     return moneiCustomerId ? [{ id: holder?.id, moneiCustomerId }] : [];
   });
 }

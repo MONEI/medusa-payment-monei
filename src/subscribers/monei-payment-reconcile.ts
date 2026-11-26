@@ -12,23 +12,25 @@ import {
   PaymentWebhookEvents,
 } from "@medusajs/framework/utils";
 import { type Monei, type Payment, PaymentStatus } from "@monei-js/node-sdk";
-import { callMonei, isNotFound, toMedusaError } from "../providers/monei/core/errors";
-import { isMoneiProvider, sessionIdOf } from "../providers/monei/core/ids";
+import type { Credentials } from "../providers/monei/core/credentials";
+import { isNotFound, toMedusaError } from "../providers/monei/core/errors";
+import { isMoneiProvider, moneiCustomerIdOf, sessionIdOf } from "../providers/monei/core/ids";
 import {
+  clientForCredentials,
   findCardHolders,
   findOne,
-  moneiClient,
+  moneiCredentials,
   type Query,
   query as resolveQuery,
 } from "../providers/monei/core/scope";
-import { verifyWebhook } from "../providers/monei/core/webhook";
+import { verifyWebhook, type WebhookSession } from "../providers/monei/core/webhook";
 import { fromMinorUnits } from "../providers/monei/utils/amount";
 import { HELD_OR_MOVED } from "../providers/monei/utils/status";
 import { scheduleHoldRelease } from "./monei-hold-release";
 
 export const ORPHAN_PAYMENT_EVENT = "monei.orphan_payment";
 
-type StoredSession = {
+type StoredSession = WebhookSession & {
   id: string;
   data?: Record<string, unknown> | null;
   context?: {
@@ -38,9 +40,12 @@ type StoredSession = {
 };
 
 async function findSession(query: Query, id: string): Promise<StoredSession | undefined> {
-  return (await findOne(query, "payment_session", ["id", "data", "context"], { id })) as
-    | StoredSession
-    | undefined;
+  return (await findOne(
+    query,
+    "payment_session",
+    ["id", "data", "context", "payment.captured_at", "payment.canceled_at"],
+    { id },
+  )) as StoredSession | undefined;
 }
 
 async function reportOrphan(
@@ -72,14 +77,15 @@ async function removeStaleHolder(
   container: MedusaContainer,
   query: Query,
   client: Monei,
+  credentials: Credentials,
   logger: Logger,
   session: StoredSession,
 ) {
-  const moneiCustomerId = session.context?.account_holder?.data?.id;
+  const moneiCustomerId = moneiCustomerIdOf(session.context?.account_holder, credentials);
   const customerId = session.context?.customer?.id;
-  if (typeof moneiCustomerId !== "string" || !moneiCustomerId || !customerId) return;
+  if (!moneiCustomerId || !customerId) return;
 
-  const holder = (await findCardHolders(query, customerId)).find(
+  const holder = (await findCardHolders(query, customerId, credentials)).find(
     (h) => h.moneiCustomerId === moneiCustomerId,
   );
   // Already deleted or replaced by a new holder: nothing left to do.
@@ -113,20 +119,23 @@ export default async function moneiPaymentReconcile({
   if (!isMoneiProvider(providerId)) return;
 
   const logger = container.resolve<Logger>(ContainerRegistrationKeys.LOGGER);
-  const client = await moneiClient(container);
+  const credentials = await moneiCredentials(container);
+  const owner = container.resolve<object>(ContainerRegistrationKeys.CONFIG_MODULE);
+  const client = () => clientForCredentials(owner, credentials);
+  const query = resolveQuery(container);
   // The core subscriber may already have rebuilt `rawData` on this shared event object.
-  const verified = verifyWebhook(client, event.data.payload ?? {});
-  if ("refused" in verified) {
-    logger.warn(`MONEI reconcile ignored a callback: ${verified.refused}`);
-    return;
-  }
+  const callback = await verifyWebhook(credentials, event.data.payload ?? {}, {
+    client,
+    logger,
+    findSession: (id) => findSession(query, id),
+  });
+  if (!callback) return;
 
-  const payment = await callMonei("get payment", () => client.payments.get(verified.paymentId));
+  const { payment } = callback;
   // Another integration on the same MONEI account.
   const sessionId = sessionIdOf(payment.orderId);
   if (!sessionId) return;
 
-  const query = resolveQuery(container);
   const session = await findSession(query, sessionId);
 
   if (HELD_OR_MOVED.has(payment.status) && session?.data?.id !== payment.id) {
@@ -138,7 +147,7 @@ export default async function moneiPaymentReconcile({
     await scheduleHoldRelease(container, { payment_id: payment.id, session_id: sessionId });
   }
   if (session?.data?.monei_customer_missing === true) {
-    await removeStaleHolder(container, query, client, logger, session);
+    await removeStaleHolder(container, query, client(), credentials, logger, session);
   }
 }
 

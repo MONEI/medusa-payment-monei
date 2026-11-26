@@ -21,6 +21,7 @@ const moneiPayment = (overrides: Record<string, unknown> = {}) => ({
   amount: 2250,
   currency: "EUR",
   status: "AUTHORIZED",
+  livemode: false,
   ...overrides,
 });
 
@@ -78,7 +79,7 @@ const runCheck = () =>
 const cancels = () => mock.history.post.filter((request) => request.url?.endsWith("/cancel"));
 
 describe("hold release: scheduling", () => {
-  const callback = JSON.stringify({ id: "pay_1", status: "AUTHORIZED" });
+  const callback = JSON.stringify({ id: "pay_1", status: "AUTHORIZED", livemode: false });
   const runCallback = () =>
     reconcile({
       event: {
