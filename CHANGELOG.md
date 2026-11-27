@@ -1,5 +1,11 @@
 # Changelog
 
+# [1.3.0](https://github.com/MONEI/medusa-payment-monei/compare/v1.2.0...v1.3.0) (2026-11-27)
+
+### Features
+
+* run on a scoped MONEI API key instead of the full account key ([#9](https://github.com/MONEI/medusa-payment-monei/issues/9)) ([02f3cf5](https://github.com/MONEI/medusa-payment-monei/commit/02f3cf5b919e3632d4c97ed35b32954d8be247c3))
+
 # [1.2.0](https://github.com/MONEI/medusa-payment-monei/compare/v1.1.0...v1.2.0) (2026-11-16)
 
 ### Features
