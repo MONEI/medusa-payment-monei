@@ -106,7 +106,7 @@ options: {
 
 To rotate a scoped key, deploy `signingSecret: [newSecret, oldSecret]` to every instance and worker before the new key creates any payment. Then set `MONEI_API_KEY` to the new key. Keep the old key and its secret until its payments settle and their callbacks have been processed. Then revoke the old key and remove its secret. Revoking it early removes `v2` from its callbacks.
 
-Before switching from a `pk_` key, wait for all open card, Bizum, PayPal, Multibanco and MB WAY payments to settle and for Medusa to process their callbacks, including retries. These callbacks have no `v2` signature, so the plugin refuses them after the switch.
+Before switching from a `pk_` key, wait until no card, Bizum, PayPal, Multibanco or MB WAY payment is pending and Medusa has processed every callback that MONEI sent, including retries. Callbacks of payments created with the `pk_` key have no `v2` signature, so the plugin refuses them after the switch.
 
 With a scoped key, the plugin refuses dashboard webhooks because they use their own signing secret. Capture and cancel from the Medusa Admin so the changes reach Medusa.
 
