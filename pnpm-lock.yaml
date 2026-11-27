@@ -110,8 +110,8 @@ importers:
   .:
     dependencies:
       '@monei-js/node-sdk':
-        specifier: ^3.3.0
-        version: 3.3.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)
+        specifier: ^3.4.0
+        version: 3.4.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)
     devDependencies:
       '@commitlint/cli':
         specifier: 21.2.4
@@ -1599,8 +1599,8 @@ packages:
     peerDependencies:
       '@mikro-orm/core': ^6.0.0
 
-  '@monei-js/node-sdk@3.3.0':
-    resolution: {integrity: sha512-FL/Dc/VS0Xf91S4k/TQ6NwBiqp/EeyYbszYcEOHpptrGT5DRMukhaIk60yeYzhDa45UyVCPc8Lb1mpGObn9VUw==}
+  '@monei-js/node-sdk@3.4.0':
+    resolution: {integrity: sha512-zkev9cNIDi26xSiu4nws1/5eLznGPC5eGKnPYQBOM+rIROH34K09hvDedPVG6IwIgwtsqrSxkW83m6ZXYJRaGQ==}
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.7':
     resolution: {integrity: sha512-2zPHLn+MuGJ6GP/5jDrwa9Jy0CI+D3Ibpvopf5SFfmc1G9gdofR4uB7YrJAAp4vodn/7iDOciyv8bgkRPLw7cA==}
@@ -9033,7 +9033,7 @@ snapshots:
       - supports-color
       - tedious
 
-  '@monei-js/node-sdk@3.3.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)':
+  '@monei-js/node-sdk@3.4.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)':
     dependencies:
       axios: 1.21.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)
     transitivePeerDependencies:

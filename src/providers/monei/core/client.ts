@@ -18,10 +18,46 @@ const DEFAULT_RELEASE_HOLDS_AFTER_MINUTES = 30;
  */
 const MAX_RELEASE_HOLDS_AFTER_MINUTES = 10_080;
 
+export function isScopedApiKey(apiKey: string): boolean {
+  return /^(bearer\s+)?mk_/i.test(apiKey);
+}
+
 export function validateOptions(options: Partial<MoneiOptions> | undefined): MoneiOptions {
   const apiKey = typeof options?.apiKey === "string" ? options.apiKey.trim() : undefined;
   if (!options || !apiKey) {
     throw new Error("Required option `apiKey` is missing in the MONEI payment provider");
+  }
+  const accountId =
+    typeof options.accountId === "string"
+      ? options.accountId.trim() || undefined
+      : options.accountId;
+  let { signingSecret } = options;
+  if (typeof signingSecret === "string") {
+    signingSecret = signingSecret.trim() || undefined;
+  } else if (Array.isArray(signingSecret)) {
+    signingSecret = Array.from(signingSecret, (secret) =>
+      typeof secret === "string" ? secret.trim() : secret,
+    );
+  }
+  if (isScopedApiKey(apiKey)) {
+    if (accountId !== undefined) {
+      throw new Error("Option `accountId` cannot be used with a scoped MONEI API key");
+    }
+    if (signingSecret === undefined) {
+      throw new Error("Option `signingSecret` is required with a scoped MONEI API key");
+    }
+    const secrets = Array.isArray(signingSecret) ? signingSecret : [signingSecret];
+    if (
+      secrets.length === 0 ||
+      secrets.some(
+        (secret) =>
+          typeof secret !== "string" || !secret.startsWith("mksec_") || secret === "mksec_",
+      )
+    ) {
+      throw new Error("Option `signingSecret` must contain one or more `mksec_` secrets");
+    }
+  } else if (signingSecret !== undefined) {
+    throw new Error("Option `signingSecret` requires a scoped MONEI API key");
   }
   // MEDUSA_BACKEND_URL is the variable Medusa's docs use for the backend URL (the
   // default of `admin.backendUrl`); the server does not know its public URL itself.
@@ -55,6 +91,8 @@ export function validateOptions(options: Partial<MoneiOptions> | undefined): Mon
   return {
     ...options,
     apiKey,
+    signingSecret,
+    accountId,
     backendUrl: backendUrl.replace(/\/+$/, ""),
     releaseUnorderedHoldsAfterMinutes: release,
   };

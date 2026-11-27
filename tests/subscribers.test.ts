@@ -1,8 +1,9 @@
 import { Monei } from "@monei-js/node-sdk";
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { MoneiOptions } from "../src/providers/monei/types";
 import reconcile, { config } from "../src/subscribers/monei-payment-reconcile";
-import { API_KEY, fakeGraph, sign } from "./helpers";
+import { API_KEY, fakeGraph, SCOPED_API_KEY, sign, SIGNING_SECRET, signV2 } from "./helpers";
 
 // The subscriber builds its own client; hand it one whose axios instance is mocked.
 const shared = vi.hoisted(() => ({ client: undefined as unknown }));
@@ -72,11 +73,17 @@ let emit: ReturnType<typeof vi.fn>;
 let deleteAccountHolder: ReturnType<typeof vi.fn>;
 let logger: Record<"warn" | "info" | "error", ReturnType<typeof vi.fn>>;
 let container: { resolve: (key: string) => unknown };
+let options: MoneiOptions;
 
-beforeEach(() => {
-  const client = new Monei(API_KEY);
+function mockClient(apiKey: string) {
+  const client = new Monei(apiKey);
   shared.client = client;
   mock = new MockAdapter(client.client);
+}
+
+beforeEach(() => {
+  options = { apiKey: API_KEY, backendUrl: "https://shop.test" };
+  mockClient(options.apiKey);
   emit = vi.fn();
   deleteAccountHolder = vi.fn();
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
@@ -89,9 +96,7 @@ beforeEach(() => {
       modules: {
         payment: {
           options: {
-            providers: [
-              { id: "monei", options: { apiKey: API_KEY, backendUrl: "https://shop.test" } },
-            ],
+            providers: [{ id: "monei", options }],
           },
         },
       },
@@ -249,6 +254,20 @@ describe("reconcile subscriber: verification", () => {
 
     expect(mock.history.get).toHaveLength(0);
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("reconcile subscriber: scoped signatures", () => {
+  it("reports an orphan when the scoped key's signing secret verifies the callback", async () => {
+    // Bug: the subscriber misses orphan payments if it does not pass the scoped signing secret.
+    options.apiKey = SCOPED_API_KEY;
+    options.signingSecret = SIGNING_SECRET;
+    mockClient(options.apiKey);
+    mock.onGet(`${API}/payments/pay_1`).reply(200, moneiPayment());
+
+    await run({ headers: { "monei-signature": signV2(callback, SIGNING_SECRET) } });
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ name: "monei.orphan_payment" }));
   });
 });
 

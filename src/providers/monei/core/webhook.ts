@@ -1,4 +1,6 @@
 import type { Monei } from "@monei-js/node-sdk";
+import type { MoneiOptions } from "../types";
+import { isScopedApiKey } from "./client";
 
 /** The `MONEI-Signature` header in any case; only a single string value is accepted. */
 function signatureHeader(headers: Record<string, unknown> | undefined): string | undefined {
@@ -53,17 +55,25 @@ function paymentIdOf(body: unknown): { paymentId: string } | { refused: string }
  */
 export function verifyWebhook(
   client: Monei,
+  { apiKey, signingSecret }: MoneiOptions,
   { rawData, headers }: { rawData?: unknown; headers?: Record<string, unknown> },
 ): { paymentId: string } | { refused: string } {
   const signature = signatureHeader(headers);
   if (!signature) return { refused: "missing or malformed MONEI-Signature header" };
   const body = rawBody(rawData);
   if (!body) return { refused: "raw body is missing or not a string or Buffer" };
-  let signed: unknown;
-  try {
-    signed = client.verifySignature(body, signature);
-  } catch {
-    return { refused: "signature verification failed" };
+  // An undefined secret tells the SDK to verify v1, so scoped keys must never pass it.
+  const secrets = isScopedApiKey(apiKey)
+    ? [signingSecret].flat().filter((secret) => secret !== undefined)
+    : [undefined];
+  for (const secret of secrets) {
+    let signed: unknown;
+    try {
+      signed = client.verifySignature(body, signature, secret);
+    } catch {
+      continue;
+    }
+    return paymentIdOf(signed);
   }
-  return paymentIdOf(signed);
+  return { refused: "signature verification failed" };
 }

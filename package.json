@@ -47,7 +47,7 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "@monei-js/node-sdk": "^3.3.0"
+    "@monei-js/node-sdk": "^3.4.0"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",

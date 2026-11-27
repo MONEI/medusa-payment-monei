@@ -1,6 +1,16 @@
 import MockAdapter from "axios-mock-adapter";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { API_KEY, hmac, sign, T, TestProvider } from "./helpers";
+import type { MoneiOptions } from "../src/providers/monei/types";
+import {
+  API_KEY,
+  hmac,
+  SCOPED_API_KEY,
+  sign,
+  SIGNING_SECRET,
+  signV2,
+  T,
+  TestProvider,
+} from "./helpers";
 
 const SESSION_ID = "payses_01";
 const PAYMENT = "https://api.monei.com/v1/payments/pay_1";
@@ -24,18 +34,22 @@ let provider: TestProvider;
 let mock: MockAdapter;
 let paymentSessionService: { list: ReturnType<typeof vi.fn> };
 
+function useProvider(options: Partial<MoneiOptions> = {}) {
+  provider = new TestProvider(
+    { logger, paymentSessionService },
+    { apiKey: API_KEY, backendUrl: "https://shop.test", ...options },
+  );
+  mock = new MockAdapter(provider["client_"].client);
+  mock.onGet(PAYMENT).reply(200, fetched());
+}
+
 beforeEach(() => {
   logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
   // Only SESSION_ID exists in Medusa.
   paymentSessionService = {
     list: vi.fn(async ({ id }: { id: string }) => (id === SESSION_ID ? [{ id }] : [])),
   };
-  provider = new TestProvider(
-    { logger, paymentSessionService },
-    { apiKey: API_KEY, backendUrl: "https://shop.test" },
-  );
-  mock = new MockAdapter(provider["client_"].client);
-  mock.onGet(PAYMENT).reply(200, fetched());
+  useProvider();
 });
 
 const webhook = (rawData: unknown, headers: Record<string, unknown>) =>
@@ -100,6 +114,82 @@ describe("getWebhookActionAndData: signature", () => {
     await expect(webhook(rawData, headers)).resolves.toEqual(NOT_SUPPORTED);
     expect(mock.history.get).toHaveLength(0);
     expect(logger.warn).toHaveBeenCalledOnce();
+  });
+});
+
+describe("getWebhookActionAndData: scoped signatures", () => {
+  it.each([
+    // Bug: a trailing newline in the env secret breaks every v2 signature.
+    ["a signing secret with a trailing newline", SCOPED_API_KEY, `${SIGNING_SECRET}\n`],
+    // Bug: classifying the key only at startup leaves callbacks on the v1 path.
+    ["an uppercase MK_ prefix", SCOPED_API_KEY.replace(/^mk_/, "MK_"), SIGNING_SECRET],
+    ["a Bearer-prefixed scoped key", `Bearer ${SCOPED_API_KEY}`, SIGNING_SECRET],
+  ])("verifies v2 and fetches the payment with %s", async (_, apiKey, signingSecret) => {
+    useProvider({ apiKey, signingSecret });
+
+    await expect(
+      webhook(body, { "monei-signature": signV2(body, SIGNING_SECRET) }),
+    ).resolves.toEqual({
+      action: "captured",
+      data: { session_id: SESSION_ID, amount: 19.99 },
+    });
+    expect(mock.history.get.map((request) => request.url)).toEqual([PAYMENT]);
+  });
+
+  it("still fetches payments signed with the old secret during rotation", async () => {
+    // Bug: trying only the first secret or leaving whitespace in the list drops in-flight callbacks.
+    const oldSecret = "mksec_test_old";
+    useProvider({
+      apiKey: SCOPED_API_KEY,
+      signingSecret: [` ${SIGNING_SECRET}`, `${oldSecret}\n`],
+    });
+    const verifySignature = vi.spyOn(provider["client_"], "verifySignature");
+
+    await expect(webhook(body, { "monei-signature": signV2(body, oldSecret) })).resolves.toEqual({
+      action: "captured",
+      data: { session_id: SESSION_ID, amount: 19.99 },
+    });
+    expect(mock.history.get.map((request) => request.url)).toEqual([PAYMENT]);
+    expect(verifySignature.mock.calls.map(([, , secret]) => secret)).toEqual([
+      SIGNING_SECRET,
+      oldSecret,
+    ]);
+  });
+
+  it("keeps a paid callback pending when the fetched payment is pending", async () => {
+    // Bug: a signed but stale status could complete the cart before payment.
+    useProvider({ apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET });
+    mock.onGet(PAYMENT).reply(200, fetched({ status: "PENDING" }));
+    const raw = JSON.stringify({ id: "pay_1", status: "SUCCEEDED", orderId: "payses_other" });
+    const signature = `${signV2(raw, SIGNING_SECRET)},v1=${hmac(raw)}`;
+
+    await expect(webhook(raw, { "monei-signature": signature })).resolves.toEqual({
+      action: "pending",
+      data: { session_id: SESSION_ID, amount: 19.99 },
+    });
+  });
+
+  it("refuses a matching v1 when v2 fails on a scoped backend", async () => {
+    // Bug: a v1 fallback can accept a callback with an invalid v2 signature.
+    useProvider({ apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET });
+    // Sign v1 with the SDK's key so an accidental fallback would verify it.
+    const signature = `${sign(body, SCOPED_API_KEY)},v2=${hmac(body, "mksec_test_other")}`;
+
+    await expect(webhook(body, { "monei-signature": signature })).resolves.toEqual(NOT_SUPPORTED);
+    expect(mock.history.get).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a v2 signature made with an unknown secret without fetching", async () => {
+    // Bug: accepting an unknown signing secret lets an unverified callback reach the payment API.
+    useProvider({ apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET });
+    const signature = signV2(body, "mksec_test_other");
+
+    await expect(webhook(body, { "monei-signature": signature })).resolves.toEqual(NOT_SUPPORTED);
+    expect(mock.history.get).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("signature verification failed"),
+    );
   });
 });
 
@@ -172,6 +262,25 @@ describe("getWebhookActionAndData: account-webhook event", () => {
       data: { session_id: SESSION_ID, amount: 19.99 },
     });
     expect(fetchedUrls()).toEqual([PAYMENT]);
+  });
+
+  it.each([
+    // Bug: the dashboard's v2 makes an account key ignore its valid v1.
+    ["still accepts dashboard webhooks with an account key", {}, "captured", [PAYMENT]],
+    // Bug: a dashboard signing secret is accepted in place of the scoped key's secret.
+    [
+      "refuses the dashboard webhook's own signing secret with a scoped key",
+      { apiKey: SCOPED_API_KEY, signingSecret: SIGNING_SECRET },
+      "not_supported",
+      [],
+    ],
+  ] as const)("%s", async (_, options, action, urls) => {
+    useProvider(options);
+    const raw = envelope();
+    const signature = `${sign(raw)},v2=${hmac(raw, "whsec_test_x")}`;
+
+    await expect(webhook(raw, { "monei-signature": signature })).resolves.toMatchObject({ action });
+    expect(fetchedUrls()).toEqual(urls);
   });
 
   it.each([

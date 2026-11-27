@@ -1,5 +1,7 @@
 export type MoneiOptions = {
   apiKey: string;
+  /** Scoped keys only: the callback signing secret, or secrets in rotation order. */
+  signingSecret?: string | string[];
   /** Partner accounts only: the merchant account to act for. */
   accountId?: string;
   /**
